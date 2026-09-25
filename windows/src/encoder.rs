@@ -4,7 +4,7 @@ use windows::Win32::Media::MediaFoundation::{
     MFStartup, MFShutdown, MF_VERSION, MFSTARTUP_NOSOCKET,
     IMFTransform, MFCreateMediaType, IMFMediaType, IMFSample, IMFMediaBuffer,
     MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
-    MF_MT_INTERLACE_MODE, MFMediaType_Video, MFVideoFormat_HEVC, MFVideoFormat_NV12,
+    MF_MT_INTERLACE_MODE, MFMediaType_Video, MFVideoFormat_H264, MFVideoFormat_NV12,
     MFVideoInterlace_Progressive, MFCreateMemoryBuffer, MFCreateSample,
     MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
     MFT_OUTPUT_DATA_BUFFER,
@@ -49,7 +49,7 @@ impl MFEncoder {
             };
             let out_info = windows::Win32::Media::MediaFoundation::MFT_REGISTER_TYPE_INFO {
                 guidMajorType: MFMediaType_Video,
-                guidSubtype: MFVideoFormat_HEVC,
+                guidSubtype: MFVideoFormat_H264,
             };
 
             // Enumerate ALL hardware video encoders (Nvidia NVENC, AMD AMF, Intel QuickSync)
@@ -100,8 +100,8 @@ impl MFEncoder {
             // 1. Set Output Type first (H.264)
             let out_type: IMFMediaType = MFCreateMediaType().context("MFCreateMediaType failed")?;
             out_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
-            out_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_HEVC)?; // QUICK WIN: H.265 / HEVC
-            out_type.SetUINT32(&MF_MT_AVG_BITRATE, 8_000_000)?; // 8 Mbps in H.265 looks like 16 Mbps in H.264!
+            out_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)?;
+            out_type.SetUINT32(&MF_MT_AVG_BITRATE, 8_000_000)?; // 8 Mbps (Perfect balance of quality and Wi-Fi stability)
             out_type.SetUINT64(&MF_MT_FRAME_RATE, pack_ratio(120, 1))?; // 120 FPS for zero-latency smoothness
             out_type.SetUINT64(&MF_MT_FRAME_SIZE, pack_ratio(width, height))?;
             out_type.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
