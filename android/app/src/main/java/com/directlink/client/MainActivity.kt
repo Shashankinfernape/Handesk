@@ -228,7 +228,10 @@ fun RemoteSessionScreen(
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         // --- VIDEO SURFACE ---
         AndroidView(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .wrapContentSize(Alignment.Center)
+                .aspectRatio(16f / 9f),
             factory = { ctx ->
                 val surface = SurfaceView(ctx)
                 val touchHandler = DirectTouchHandler(networkClient, surface)

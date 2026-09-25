@@ -101,7 +101,7 @@ impl MFEncoder {
             let out_type: IMFMediaType = MFCreateMediaType().context("MFCreateMediaType failed")?;
             out_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
             out_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)?;
-            out_type.SetUINT32(&MF_MT_AVG_BITRATE, 12_000_000)?; // 12 Mbps for crystal clear quality
+            out_type.SetUINT32(&MF_MT_AVG_BITRATE, 8_000_000)?; // 8 Mbps (Perfect balance of quality and Wi-Fi stability)
             out_type.SetUINT64(&MF_MT_FRAME_RATE, pack_ratio(120, 1))?; // 120 FPS for zero-latency smoothness
             out_type.SetUINT64(&MF_MT_FRAME_SIZE, pack_ratio(width, height))?;
             out_type.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;

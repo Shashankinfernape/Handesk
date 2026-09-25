@@ -93,8 +93,11 @@ pub async fn start_direct_server() -> Result<()> {
                             if let Err(e) = socket_clone.send_to(&frame, remote_addr).await {
                                 error!("Failed to send UDP chunk: {}", e);
                             }
-                            // Removed artificial pacing to prevent Windows 15.6ms Timer Resolution penalty.
-                            // Burst at true maximum UDP velocity!
+                            
+                            // Micro-pacing: Prevent router/UDP buffer overflow during fast-moving (large) video frames.
+                            // Unlike sleep(), yield_now() avoids the toxic 15.6ms Windows OS Timer penalty, 
+                            // creating a microsecond-scale delay that perfectly spaces out packets for Wi-Fi.
+                            tokio::task::yield_now().await;
                         }
                     }
                 });

@@ -26,6 +26,7 @@
         android:extractNativeLibs="false"
         android:label="DirectLink"
         android:supportsRtl="true"
+        android:testOnly="true"
         android:usesCleartextTraffic="true" >
         <activity
             android:name="com.directlink.client.MainActivity"

@@ -4,14 +4,28 @@ import android.view.GestureDetector
 import android.view.ScaleGestureDetector
 import android.view.MotionEvent
 import android.view.View
+import android.os.Handler
+import android.os.Looper
 
 class DirectTouchHandler(private val networkClient: NetworkClient, private val view: View) : View.OnTouchListener {
     
     private var isHoldDragging = false
     private var lastScrollY = 0f
 
+    // Custom Long Press Implementation
+    private val handler = Handler(Looper.getMainLooper())
+    private var startX = 0f
+    private var startY = 0f
+    private var isLongPressCanceled = false
+    private val longPressRunnable = Runnable {
+        if (!isLongPressCanceled) {
+            isHoldDragging = true
+            networkClient.sendMouseButton(1, true) // Left click down to start drag
+        }
+    }
+
     private val gestureDetector = GestureDetector(view.context, object : GestureDetector.SimpleOnGestureListener() {
-        override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+        override fun onSingleTapUp(e: MotionEvent): Boolean {
             networkClient.sendMouseButton(1, true)
             networkClient.sendMouseButton(1, false)
             return true
@@ -21,11 +35,6 @@ class DirectTouchHandler(private val networkClient: NetworkClient, private val v
             networkClient.sendMouseButton(2, true)
             networkClient.sendMouseButton(2, false)
             return true
-        }
-
-        override fun onLongPress(e: MotionEvent) {
-            isHoldDragging = true
-            networkClient.sendMouseButton(1, true)
         }
     })
 
@@ -97,9 +106,19 @@ class DirectTouchHandler(private val networkClient: NetworkClient, private val v
             MotionEvent.ACTION_DOWN -> {
                 networkClient.sendMouseMove(normX, normY)
                 lastMoveTime = System.currentTimeMillis()
+                
+                // Start custom long press timer (1 full second)
+                startX = event.x
+                startY = event.y
+                isLongPressCanceled = false
+                handler.removeCallbacks(longPressRunnable)
+                handler.postDelayed(longPressRunnable, 1000)
             }
             
             MotionEvent.ACTION_POINTER_DOWN -> {
+                isLongPressCanceled = true
+                handler.removeCallbacks(longPressRunnable)
+                
                 if (event.pointerCount == 2) {
                     startScrollY = event.getY(1)
                     lastScrollY = event.getY(1)
@@ -110,6 +129,12 @@ class DirectTouchHandler(private val networkClient: NetworkClient, private val v
             
             MotionEvent.ACTION_MOVE -> {
                 if (event.pointerCount == 1) {
+                    // Cancel long press if they move their finger more than 15 pixels before the 1 second is up
+                    if (!isLongPressCanceled && (Math.abs(event.x - startX) > 15f || Math.abs(event.y - startY) > 15f)) {
+                        isLongPressCanceled = true
+                        handler.removeCallbacks(longPressRunnable)
+                    }
+
                     // Instantly transmit raw touch coordinates at maximum digitizer polling rate (120Hz/240Hz)
                     networkClient.sendMouseMove(normX, normY)
                 } else if (event.pointerCount == 2) {
@@ -138,6 +163,9 @@ class DirectTouchHandler(private val networkClient: NetworkClient, private val v
             }
             
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                isLongPressCanceled = true
+                handler.removeCallbacks(longPressRunnable)
+
                 if (isHoldDragging) {
                     networkClient.sendMouseButton(1, false)
                     isHoldDragging = false
