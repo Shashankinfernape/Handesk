@@ -1,0 +1,15 @@
+{
+  "name": "directlink-signal",
+  "version": "1.0.0",
+  "description": "DirectLink P2P signaling server for NAT traversal",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "express": "^4.22.3",
+    "uuid": "^9.0.1",
+    "ws": "^8.21.3"
+  }
+}

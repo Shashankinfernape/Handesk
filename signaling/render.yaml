@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: directlink-signal
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node index.js
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 3000
