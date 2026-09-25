@@ -6,12 +6,18 @@ import android.view.Surface
 import java.nio.ByteBuffer
 
 class VideoDecoder(private val surface: Surface, width: Int, height: Int) {
-    private val decoder = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+    private val decoder = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC)
     private var isRunning = false
 
     init {
         try {
-            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
+            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, width, height)
+            
+            // QUICK WIN: Enable Android Low-Latency Decoding (API 30+)
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+            }
+            
             decoder.configure(format, surface, null, 0)
             DebugStats.decoderConfigured = true
         } catch (e: Exception) {
@@ -50,8 +56,11 @@ class VideoDecoder(private val surface: Surface, width: Int, height: Int) {
                 val end = if (j == naluStarts.size - 1) data.size else naluStarts[j+1].first
                 val naluSize = end - start
                 
-                val type = data[start + startCodeLen].toInt() and 0x1F
-                val flags = if (type == 7 || type == 8) MediaCodec.BUFFER_FLAG_CODEC_CONFIG else 0
+                // HEVC (H.265) NAL Unit Type Parsing
+                val type = (data[start + startCodeLen].toInt() and 0x7E) ushr 1
+                
+                // VPS (32), SPS (33), PPS (34) are Codec Config frames
+                val flags = if (type == 32 || type == 33 || type == 34) MediaCodec.BUFFER_FLAG_CODEC_CONFIG else 0
 
                 // Fast non-blocking feed to the decoder chip
                 val inIndex = decoder.dequeueInputBuffer(1000)

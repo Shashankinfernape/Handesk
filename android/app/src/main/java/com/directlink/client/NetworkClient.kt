@@ -44,6 +44,9 @@ class NetworkClient {
     private fun startUdpVideoListener() {
         listenerJob?.cancel()
         listenerJob = scope.launch {
+            // QUICK WIN: Boost thread priority to URGENT so OS never pauses our UDP packet receiver
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
+
             val buf = ByteArray(2048)
             val packet = DatagramPacket(buf, buf.size)
 
