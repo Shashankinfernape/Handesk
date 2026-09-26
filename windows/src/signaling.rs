@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::Mutex;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, debug, error};
@@ -39,10 +39,13 @@ pub struct SignalingClient {
     signing_key: SigningKey,
     pub remote_id: Option<String>,
     pub capture_task: Option<tokio::task::JoinHandle<()>>,
+    pub public_ip: Option<String>,
+    pub public_ip_v6: Option<String>,
+    pub udp_socket: Arc<tokio::net::UdpSocket>,
 }
 
 impl SignalingClient {
-    pub async fn connect(url: &str) -> Result<Arc<Mutex<Self>>> {
+    pub async fn connect(url: &str, public_ip: Option<String>, public_ip_v6: Option<String>, udp_socket: Arc<tokio::net::UdpSocket>) -> Result<Arc<Mutex<Self>>> {
         let (ws_stream, _) = connect_async(url).await.context("Failed to connect to signaling server")?;
         let (mut write, mut read) = ws_stream.split();
 
@@ -60,6 +63,9 @@ impl SignalingClient {
             signing_key,
             remote_id: None,
             capture_task: None,
+            public_ip,
+            public_ip_v6,
+            udp_socket,
         }));
 
         let client_clone = client.clone();
@@ -75,7 +81,12 @@ impl SignalingClient {
                         }
                     }
                     Ok(Message::Binary(bin)) => {
-                        crate::input::handle_input_payload(&bin);
+                        // Strip UDP packet header (DLP1 + 0x07) if present
+                        if bin.len() >= 5 && &bin[0..4] == b"DLP1" && bin[4] == 0x07 {
+                            crate::input::handle_input_payload(&bin[5..]);
+                        } else {
+                            crate::input::handle_input_payload(&bin);
+                        }
                     }
                     Err(e) => error!("WebSocket read error: {}", e),
                     _ => {}
@@ -109,89 +120,99 @@ impl SignalingClient {
                 info!("========================================");
             }
             SignalMessage::ClientRequest { sessionId, clientIp } => {
-                info!("Incoming connection request from {} — starting WebSocket video relay", clientIp);
-                
+                info!("Incoming connection request from {} - sending UDP candidate", clientIp);
                 let c = client.clone();
                 let session = sessionId.clone();
-                
-                // Abort any existing capture loop so they don't fight over the websocket!
-                {
-                    let mut lock = client.lock().await;
-                    if let Some(task) = lock.capture_task.take() {
-                        info!("Canceling previous capture task...");
-                        task.abort();
-                    }
-                }
 
                 tokio::spawn(async move {
-                    // Tell Android "ws_relay:<sessionId>" so it connects via WebSocket relay
-                    let candidate_msg = serde_json::to_string(&SignalMessage::Candidate {
-                        sessionId: session.clone(),
-                        candidate: format!("ws_relay:{}", session),
-                        isHost: Some(true),
-                        serverReflexiveIp: None,
-                    }).unwrap();
+                    let lock = c.lock().await;
                     
-                    {
-                        let lock = c.lock().await;
+                    // Send Public IPv4 candidate
+                    if let Some(ip) = &lock.public_ip {
+                        let candidate_msg = serde_json::to_string(&SignalMessage::Candidate {
+                            sessionId: session.clone(),
+                            candidate: "udp:0.0.0.0".to_string(),
+                            isHost: Some(true),
+                            serverReflexiveIp: Some(ip.clone()),
+                        }).unwrap();
                         let mut tx_lock = lock.ws_tx.lock().await;
                         let _ = tx_lock.send(Message::Text(candidate_msg)).await;
+                        drop(tx_lock);
+                        info!("Sent Public IPv4 UDP candidate: {}", ip);
+                    }
+                    
+                    // Send Public IPv6 candidate
+                    if let Some(ip_v6) = &lock.public_ip_v6 {
+                        let candidate_v6_msg = serde_json::to_string(&SignalMessage::Candidate {
+                            sessionId: session.clone(),
+                            candidate: "udp:0.0.0.0".to_string(),
+                            isHost: Some(true),
+                            serverReflexiveIp: Some(ip_v6.clone()),
+                        }).unwrap();
+                        let mut tx_lock = lock.ws_tx.lock().await;
+                        let _ = tx_lock.send(Message::Text(candidate_v6_msg)).await;
+                        drop(tx_lock);
+                        info!("Sent Public IPv6 UDP candidate: {}", ip_v6);
                     }
 
-                    info!("========================================");
-                    info!("  CLIENT CONNECTED — WebSocket relay");
-                    info!("  Starting video stream for session: {}", session);
-                    info!("========================================");
-
-                    // Start capture + encoder, stream binary frames over this WebSocket
-                    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
-                    let capture_handle = tokio::spawn(async move {
-                        if let Err(e) = crate::capture::start_capture_loop(tx).await {
-                            error!("Capture loop error: {}", e);
-                        }
-                    });
-
-                    {
-                        let mut lock = c.lock().await;
-                        lock.capture_task = Some(capture_handle);
-                    }
-
-                    let mut frame_counter: u32 = 0;
-                    while let Some(nalu) = rx.recv().await {
-                        let frame_id = frame_counter;
-                        frame_counter = frame_counter.wrapping_add(1);
-
-                        let chunks = nalu.chunks(1200).collect::<Vec<_>>();
-                        let total_chunks = chunks.len() as u16;
-
-                        for (i, chunk) in chunks.iter().enumerate() {
-                            let chunk_idx = i as u16;
-                            // Binary packet: [2-byte chunk_idx][2-byte total][4-byte frame_id][payload]
-                            let mut packet = Vec::with_capacity(8 + chunk.len());
-                            packet.extend_from_slice(&chunk_idx.to_le_bytes());
-                            packet.extend_from_slice(&total_chunks.to_le_bytes());
-                            packet.extend_from_slice(&frame_id.to_le_bytes());
-                            packet.extend_from_slice(chunk);
-
-                            let lock = c.lock().await;
-                            let mut tx_lock = lock.ws_tx.lock().await;
-                            if tx_lock.send(Message::Binary(packet)).await.is_err() {
-                                info!("Client disconnected, stopping stream");
-                                return;
+                    // Send ALL Local IPv4 addresses (This is how Tailscale 100.x.x.x will be sent!)
+                    if let Ok(output) = std::process::Command::new("ipconfig").output() {
+                        let output_str = String::from_utf8_lossy(&output.stdout);
+                        for line in output_str.lines() {
+                            if line.contains("IPv4 Address") {
+                                if let Some(ip_part) = line.split(": ").last() {
+                                    let local_ip = ip_part.trim().to_string();
+                                    let local_ip_with_port = format!("{}:21118", local_ip);
+                                    
+                                    let candidate_local = serde_json::to_string(&SignalMessage::Candidate {
+                                        sessionId: session.clone(),
+                                        candidate: "udp:0.0.0.0".to_string(),
+                                        isHost: Some(true),
+                                        serverReflexiveIp: Some(local_ip_with_port.clone()),
+                                    }).unwrap();
+                                    let mut tx_lock = lock.ws_tx.lock().await;
+                                    let _ = tx_lock.send(Message::Text(candidate_local)).await;
+                                    drop(tx_lock);
+                                    info!("Sent Local/Tailscale IPv4 UDP candidate: {}", local_ip_with_port);
+                                }
                             }
                         }
+                    }
 
-                        if frame_counter % 30 == 0 {
-                            info!("Streamed frame {} ({} bytes, {} chunks) via WebSocket", frame_id, nalu.len(), total_chunks);
-                        }
+                    if lock.public_ip.is_none() && lock.public_ip_v6.is_none() {
+                        error!("No STUN IP available! Will rely on Tailscale/Local candidates.");
                     }
                 });
             }
             SignalMessage::Candidate { sessionId, candidate, serverReflexiveIp, .. } => {
                 info!("Received candidate from Android for {}: {}", sessionId, candidate);
+                let mut targets = Vec::new();
                 if let Some(ip) = serverReflexiveIp {
                     info!("Android public IP: {}", ip);
+                    targets.push(ip);
                 }
+                if candidate.starts_with("udp:") {
+                    let local = candidate.trim_start_matches("udp:");
+                    targets.push(format!("{}:21118", local));
+                }
+
+                let socket = {
+                    let c = client.lock().await;
+                    c.udp_socket.clone()
+                };
+
+                // Blast hole-punch packets to Android's IPs!
+                tokio::spawn(async move {
+                    let hello_packet = [b'D', b'L', b'P', b'1', 0x01];
+                    for _ in 0..10 {
+                        for t in &targets {
+                            if let Ok(addr) = t.parse::<std::net::SocketAddr>() {
+                                let _ = socket.send_to(&hello_packet, addr).await;
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                });
             }
             SignalMessage::Error { message } => {
                 error!("Signaling Error: {}", message);

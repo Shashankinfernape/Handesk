@@ -14,9 +14,7 @@ const PACKET_HELLO: u8 = 0x01;
 const PACKET_VIDEO: u8 = 0x06;
 const PACKET_INPUT: u8 = 0x07;
 
-pub async fn start_direct_server() -> Result<()> {
-    // Bind to the exact port RustDesk uses for direct IP connections
-    let socket = Arc::new(UdpSocket::bind("0.0.0.0:21118").await?);
+pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
     info!("========================================");
     info!(" DirectLink Server Listening on UDP 21118");
     info!(" Waiting for Android Client (Local IP)...");
@@ -42,6 +40,9 @@ pub async fn start_direct_server() -> Result<()> {
 
         match packet_type {
             PACKET_HELLO => {
+                // Instantly echo HELLO back so Android doesn't time out while NVENC initializes!
+                let _ = socket.send_to(&buf[0..len], remote_addr).await;
+
                 // Ignore duplicate HELLOs from the exact same tablet session to prevent crashing DXGI
                 if current_client == Some(remote_addr) {
                     continue;
@@ -97,7 +98,7 @@ pub async fn start_direct_server() -> Result<()> {
                             // Micro-pacing: Prevent router/UDP buffer overflow during fast-moving (large) video frames.
                             // Unlike sleep(), yield_now() avoids the toxic 15.6ms Windows OS Timer penalty, 
                             // creating a microsecond-scale delay that perfectly spaces out packets for Wi-Fi.
-                            tokio::task::yield_now().await;
+
                         }
                     }
                 });
@@ -109,3 +110,74 @@ pub async fn start_direct_server() -> Result<()> {
         }
     }
 }
+pub async fn start_relay_client(relay_ip: &str, relay_port: u16, session_id: &str) -> Result<()> {
+    let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+    let remote_addr: SocketAddr = format!("{}:{}", relay_ip, relay_port).parse()?;
+    
+    // Bind to Relay
+    let bind_msg = format!("BIND:{}:HOST", session_id);
+    socket.send_to(bind_msg.as_bytes(), remote_addr).await?;
+    
+    info!("========================================");
+    info!(" DIRECTLINK RELAY AUTHENTICATED");
+    info!(" Streaming Video via UDP Relay!");
+    info!("========================================");
+
+    // Spawn capture loop
+    let (video_tx, mut video_rx) = mpsc::channel::<Vec<u8>>(4);
+    tokio::spawn(async move {
+        if let Err(e) = crate::capture::start_capture_loop(video_tx).await {
+            error!("Capture loop failed: {:?}", e);
+        }
+    });
+
+    let socket_clone = socket.clone();
+    tokio::spawn(async move {
+        let mut sequence: u32 = 0;
+        while let Some(nalu) = video_rx.recv().await {
+            sequence = sequence.wrapping_add(1);
+            let total_chunks = ((nalu.len() + MAX_UDP_PAYLOAD - 1) / MAX_UDP_PAYLOAD) as u16;
+            
+            for (chunk_index, chunk) in nalu.chunks(MAX_UDP_PAYLOAD).enumerate() {
+                let mut frame = BytesMut::with_capacity(15 + chunk.len());
+                frame.extend_from_slice(&MAGIC_BYTES);
+                frame.put_u8(PACKET_VIDEO);
+                frame.put_u32_le(sequence);
+                frame.put_u16_le(chunk_index as u16);
+                frame.put_u16_le(total_chunks);
+                frame.put_u16_le(chunk.len() as u16);
+                frame.extend_from_slice(chunk);
+let _ = socket_clone.send_to(&frame, remote_addr).await;
+                                // Micro-pacing: Prevent Tailscale/UDP buffer drop for massive IDR frames
+                                // We spin-wait for 150us to spread the burst out, ensuring 100% delivery.
+                                let spin_start = std::time::Instant::now();
+                                while spin_start.elapsed().as_micros() < 300 {
+                                    std::hint::spin_loop();
+                                }
+                                tokio::task::yield_now().await;
+
+            }
+        }
+    });
+
+    let mut buf = vec![0u8; 2048];
+    loop {
+        let (len, src) = socket.recv_from(&mut buf).await?;
+        if src != remote_addr { continue; }
+        
+        let payload = &buf[..len];
+        if payload == b"BIND_OK" { continue; }
+        
+        if len >= 5 && &payload[0..4] == &MAGIC_BYTES {
+            if payload[4] == PACKET_INPUT {
+                crate::input::handle_input_payload(&payload[5..len]);
+            }
+        }
+    }
+}
+
+
+
+
+
+

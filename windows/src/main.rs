@@ -17,14 +17,18 @@ async fn main() -> Result<()> {
             windows::Win32::System::Threading::GetCurrentProcess(),
             windows::Win32::System::Threading::REALTIME_PRIORITY_CLASS
         );
+        windows::Win32::Media::timeBeginPeriod(1);
     }
 
     tracing_subscriber::fmt::init();
     info!("Starting DirectLink Host (Direct IP Server Mode)...");
 
-    if let Err(e) = network_udp::start_direct_server().await {
+    let socket = std::sync::Arc::new(tokio::net::UdpSocket::bind("0.0.0.0:21118").await?);
+    if let Err(e) = network_udp::start_direct_server(socket).await {
         error!("Server crashed: {:?}", e);
     }
 
     Ok(())
 }
+
+

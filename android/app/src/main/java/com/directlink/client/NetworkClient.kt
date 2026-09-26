@@ -3,34 +3,79 @@ package com.directlink.client
 import kotlinx.coroutines.*
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.InetSocketAddress
 import java.net.InetAddress
 
 class NetworkClient {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private var socket: DatagramSocket? = null
+    var socket: DatagramSocket? = null
     private var serverAddress: InetAddress? = null
-    private val SERVER_PORT = 21118
+    private var targetPort = 21118
     private var listenerJob: Job? = null
 
     val isConnected: Boolean
         get() = socket != null
 
+    var inputPacketSender: ((ByteArray) -> Unit)? = null
     var videoFrameCallback: ((ByteArray) -> Unit)? = null
 
     // FrameId -> Pair(expectedChunks, MutableMap<ChunkIdx, ByteArray>)
     private val frameBuffers = mutableMapOf<Int, Pair<Int, MutableMap<Int, ByteArray>>>()
 
-    suspend fun connectToHost(hostIp: String): String? = withContext(Dispatchers.IO) {
+    suspend fun connectToHost(localIp: String, publicAddr: String = ""): String? = withContext(Dispatchers.IO) {
         try {
-            val cleanIp = hostIp.trim()
-            serverAddress = InetAddress.getByName(cleanIp)
-            socket = DatagramSocket() // Bind to any local port
+            if (socket == null || socket?.isClosed == true) {
+                socket = DatagramSocket() // Bind to any local port
+            }
+            socket?.soTimeout = 1500 // Increased timeout for PC init for volley
+            targetPort = 21118
 
-            // Send HELLO packet (DLP1 + 0x01)
             val helloPacket = byteArrayOf('D'.code.toByte(), 'L'.code.toByte(), 'P'.code.toByte(), '1'.code.toByte(), 0x01)
-            val dp = DatagramPacket(helloPacket, helloPacket.size, serverAddress, SERVER_PORT)
-            socket?.send(dp)
-            println("DirectLink: Sent UDP HELLO to $cleanIp:$SERVER_PORT")
+            
+            val targets = mutableListOf<InetSocketAddress>()
+            try { targets.add(InetSocketAddress(InetAddress.getByName(localIp.trim()), targetPort)) } catch(e: Exception){}
+            
+            if (publicAddr.isNotEmpty() && publicAddr.contains(":")) {
+                try {
+                    val parts = publicAddr.split(":")
+                    targets.add(InetSocketAddress(InetAddress.getByName(parts[0]), parts[1].toInt()))
+                } catch(e: Exception){}
+            }
+
+            println("DirectLink: Blasting UDP HELLO to targets: $targets")
+            var connected = false
+
+            // Blast loop (3 attempts)
+            for (i in 1..6) {
+                for (target in targets) {
+                    try {
+                        val dp = DatagramPacket(helloPacket, helloPacket.size, target.address, target.port)
+                        socket?.send(dp)
+                    } catch(e: Exception) {}
+                }
+                
+                // Listen for response
+                val testBuf = ByteArray(2048)
+                val testPacket = DatagramPacket(testBuf, testBuf.size)
+                try {
+                    socket?.receive(testPacket)
+                    println("DirectLink: Hole punch successful! Received packet from ${testPacket.address}:${testPacket.port}")
+                    // Lock onto this address!
+                    serverAddress = testPacket.address
+                    targetPort = testPacket.port
+                    connected = true
+                    break
+                } catch (e: Exception) {    kotlinx.coroutines.delay(500)
+                }
+            }
+
+            if (!connected) {
+                socket?.close()
+                println("DirectLink: UDP Hole punch TIMED OUT. NAT is too strict.")
+                return@withContext "Timeout"
+            }
+
+            socket?.soTimeout = 0 // Reset to infinite for the listener loop
 
             // Start Listening Loop
             startUdpVideoListener()
@@ -123,8 +168,10 @@ class NetworkClient {
                 fullPacket[4] = 0x07
                 System.arraycopy(payload, 0, fullPacket, 5, payload.size)
 
-                if (socket != null && serverAddress != null) {
-                    val dp = DatagramPacket(fullPacket, fullPacket.size, serverAddress, SERVER_PORT)
+                if (inputPacketSender != null) { 
+                    inputPacketSender?.invoke(fullPacket) 
+                } else if (socket != null && serverAddress != null) {
+                    val dp = DatagramPacket(fullPacket, fullPacket.size, serverAddress, targetPort)
                     socket?.send(dp)
                 }
             } catch (e: Exception) {
@@ -173,4 +220,39 @@ class NetworkClient {
         socket?.close()
         socket = null
     }
+    suspend fun connectToRelay(relayIp: String, relayPort: Int, sessionId: String): String? = withContext(Dispatchers.IO) {
+        try {
+            val cleanIp = relayIp.trim()
+            serverAddress = InetAddress.getByName(cleanIp)
+            targetPort = relayPort
+            socket = DatagramSocket() // Bind to any local port
+
+            // Send BIND packet: BIND:<sessionId>:CLIENT
+            val bindStr = "BIND:$sessionId:CLIENT"
+            val bindPacket = bindStr.toByteArray()
+            val dp = DatagramPacket(bindPacket, bindPacket.size, serverAddress, targetPort)
+            
+            socket?.send(dp)
+            println("DirectLink: Sent UDP BIND to Relay $cleanIp:$targetPort")
+
+            // Wait a brief moment for relay to register
+            delay(100)
+            
+            // Send HELLO packet (DLP1 + 0x01) so the Rust Host gets it through the relay!
+            val helloPacket = byteArrayOf('D'.code.toByte(), 'L'.code.toByte(), 'P'.code.toByte(), '1'.code.toByte(), 0x01)
+            val dp2 = DatagramPacket(helloPacket, helloPacket.size, serverAddress, targetPort)
+            socket?.send(dp2)
+
+            // Start Listening Loop
+            startUdpVideoListener()
+            null // Success
+        } catch (e: Exception) {
+            e.printStackTrace()
+            e.message ?: "Unknown error"
+        }
+    }
+
 }
+
+
+

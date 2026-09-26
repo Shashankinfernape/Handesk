@@ -21,54 +21,84 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SA
 pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
     info!("Starting DXGI Desktop Duplication capture loop");
 
-    // 1. Create D3D11 Device
-    let mut device: Option<ID3D11Device> = None;
-    let mut context: Option<ID3D11DeviceContext> = None;
-    unsafe {
-        D3D11CreateDevice(
-            None,
-            D3D_DRIVER_TYPE_HARDWARE,
-            None,
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            Some(&[D3D_FEATURE_LEVEL_11_0]),
-            D3D11_SDK_VERSION,
-            Some(&mut device),
-            None,
-            Some(&mut context),
-        ).context("Failed to create D3D11 device")?;
-    }
-
-    let d3d_device = device.unwrap();
-    let d3d_context = context.unwrap();
-
-    // 2. Get DXGI structures
-    let dxgi_device: IDXGIDevice = d3d_device.cast()?;
-    let adapter: IDXGIAdapter = unsafe { dxgi_device.GetAdapter()? };
+    // Get DXGI Factory to enumerate adapters correctly for laptops
+    let factory: windows::Win32::Graphics::Dxgi::IDXGIFactory1 = unsafe { windows::Win32::Graphics::Dxgi::CreateDXGIFactory1().context("Failed to create DXGI factory")? };
     
-    // Get primary output (monitor 0)
-    let output: IDXGIOutput = unsafe { adapter.EnumOutputs(0)? };
-    let output1: IDXGIOutput1 = output.cast()?;
-
-    // 3. Duplicate Output
-    let duplication_result = unsafe {
-        output1.DuplicateOutput(&dxgi_device)
-    };
-
-    if duplication_result.is_err() {
-        error!("Failed to duplicate output! Falling back to test pattern generator.");
-        let width = 1600;
+    let mut best_device: Option<ID3D11Device> = None;
+    let mut best_context: Option<ID3D11DeviceContext> = None;
+    let mut best_dxgi_device: Option<IDXGIDevice> = None;
+    let mut best_output: Option<windows::Win32::Graphics::Dxgi::IDXGIOutput1> = None;
+    let mut best_duplication: Option<windows::Win32::Graphics::Dxgi::IDXGIOutputDuplication> = None;
+    
+    // Bruteforce search: DXGI Desktop Duplication on Laptops (Optimus) returns E_ACCESSDENIED 
+    // if you try to capture the desktop using the dGPU instead of the iGPU.
+    // We must try EVERY GPU and EVERY monitor until one successfully returns DuplicateOutput.
+    'outer: for i in 0..10 {
+        if let Ok(adapter) = unsafe { factory.EnumAdapters(i) } {
+            for j in 0..5 {
+                if let Ok(output) = unsafe { adapter.EnumOutputs(j) } {
+                    if let Ok(output1) = output.cast::<windows::Win32::Graphics::Dxgi::IDXGIOutput1>() {
+                        
+                        let mut dev: Option<ID3D11Device> = None;
+                        let mut ctx: Option<ID3D11DeviceContext> = None;
+                        
+                        let hr = unsafe {
+                            D3D11CreateDevice(
+                                &adapter,
+                                windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN,
+                                None,
+                                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                Some(&[D3D_FEATURE_LEVEL_11_0]),
+                                D3D11_SDK_VERSION,
+                                Some(&mut dev),
+                                None,
+                                Some(&mut ctx),
+                            )
+                        };
+                        
+                        if hr.is_ok() {
+                            let d3d_device = dev.unwrap();
+                            let d3d_context = ctx.unwrap();
+                            if let Ok(dxgi_device) = d3d_device.cast::<IDXGIDevice>() {
+                                // THE ULTIMATE TEST: Does it let us duplicate?
+                                if let Ok(duplication) = unsafe { output1.DuplicateOutput(&dxgi_device) } {
+                                    info!("SUCCESS! Found correct GPU (Adapter {}) and Monitor ({}) for Desktop Duplication!", i, j);
+                                    best_device = Some(d3d_device);
+                                    best_context = Some(d3d_context);
+                                    best_dxgi_device = Some(dxgi_device);
+                                    best_output = Some(output1);
+                                    best_duplication = Some(duplication);
+                                    break 'outer;
+                                } else {
+                                    info!("GPU {} Monitor {} exists, but DuplicateOutput returned Access Denied/Unsupported.", i, j);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    break; // No more outputs on this adapter
+                }
+            }
+        } else {
+            break; // No more adapters
+        }
+    }
+    
+    if best_duplication.is_none() {
+        error!("Failed to duplicate output! Error: E_ACCESSDENIED. Falling back to test pattern generator.");
+        let width = 600;
         let height = 900;
-    let mut encoder = crate::encoder::MFEncoder::new(width, height)?;
+        let mut encoder = crate::encoder::MFEncoder::new(width, height)?;
         let mut bgra_buffer = vec![255u8; (width * height * 4) as usize];
         
-        let mut frame_count = 0;
+        let mut frame_count: u32 = 0;
         loop {
             let color = (frame_count % 255) as u8;
             for i in (0..bgra_buffer.len()).step_by(4) {
-                bgra_buffer[i] = color;
-                bgra_buffer[i+1] = color;
-                bgra_buffer[i+2] = color;
-                bgra_buffer[i+3] = 255;
+                bgra_buffer[i] = color;      // B
+                bgra_buffer[i+1] = color;    // G
+                bgra_buffer[i+2] = color;    // R
+                bgra_buffer[i+3] = 255;      // A
             }
             
             match encoder.encode_frame(&bgra_buffer) {
@@ -86,11 +116,14 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
         }
         return Ok(());
     }
-
-    let duplication: IDXGIOutputDuplication = duplication_result.unwrap();
+    
+    let duplication = best_duplication.unwrap();
+    let d3d_device = best_device.unwrap();
+    let d3d_context = best_context.unwrap();
+    let output1 = best_output.unwrap();
 
     // Get monitor resolution
-    let desc = unsafe { output.GetDesc()? };
+    let desc = unsafe { output1.GetDesc()? };
     let width = (desc.DesktopCoordinates.right - desc.DesktopCoordinates.left) as u32;
     let height = (desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top) as u32;
     info!("DXGI Capture Target: {}x{}", width, height);
@@ -127,77 +160,72 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
         let mut desktop_resource: Option<IDXGIResource> = None;
         
         let res = unsafe {
-            duplication.AcquireNextFrame(100, &mut frame_info, &mut desktop_resource)
+            duplication.AcquireNextFrame(0, &mut frame_info, &mut desktop_resource)
         };
 
         match res {
             Ok(_) => {
-                // If LastPresentTime is 0, the screen didn't update.
-                // Send to encoder even if LastPresentTime is 0 so the video stream initializes!
                 if let Some(resource) = desktop_resource {
                     let frame_texture: ID3D11Texture2D = resource.cast()?;
-                    
-                    // Copy to staging texture to read CPU bytes
                     unsafe {
                         d3d_context.CopyResource(&staging_texture, &frame_texture);
-                        
                         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-                        d3d_context.Map(
-                            &staging_texture,
-                            0,
-                            D3D11_MAP_READ,
-                            0,
-                            Some(&mut mapped)
-                        )?;
-
+                        d3d_context.Map(&staging_texture, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
                         let pitch = mapped.RowPitch as usize;
                         let src_slice = std::slice::from_raw_parts(mapped.pData as *const u8, pitch * height as usize);
-                        
-                        // Copy row by row to drop padding if pitch > width * 4
                         let row_width = (width * 4) as usize;
                         for y in 0..height as usize {
                             let src_start = y * pitch;
                             let dst_start = y * row_width;
-                            bgra_buffer[dst_start..dst_start+row_width]
-                                .copy_from_slice(&src_slice[src_start..src_start+row_width]);
+                            bgra_buffer[dst_start..dst_start+row_width].copy_from_slice(&src_slice[src_start..src_start+row_width]);
                         }
-
                         d3d_context.Unmap(&staging_texture, 0);
-                        let _ = duplication.ReleaseFrame();
-                    }
-
-                    // Strict 120fps Throttle to prevent Network Buffer bloat while allowing zero-latency mirroring
-                    let elapsed = frame_start.elapsed();
-                    if elapsed < Duration::from_millis(8) {
-                        tokio::time::sleep(Duration::from_millis(8) - elapsed).await;
-                    }
-                    frame_start = tokio::time::Instant::now();
-
-                    // Send to encoder
-                    match encoder.encode_frame(&bgra_buffer) {
-                        Ok(nalu) => {
-                            if !nalu.is_empty() {
-                                if tx.send(nalu).await.is_err() {
-                                    info!("Capture loop shutting down (receiver dropped)");
-                                    break Ok(());
-                                }
+                        
+                        // DEBUG: Draw a 100x100 RED square in the top left corner of the buffer
+                        for y in 0..100 {
+                            for x in 0..100 {
+                                let idx = (y * (width as usize) + x) * 4;
+                                bgra_buffer[idx] = 0;       // B
+                                bgra_buffer[idx+1] = 0;     // G
+                                bgra_buffer[idx+2] = 255;   // R
+                                bgra_buffer[idx+3] = 255;   // A
                             }
                         }
-                        Err(e) => error!("Encoder error: {}", e),
+                        let _ = duplication.ReleaseFrame();
                     }
                 } else {
                     unsafe { let _ = duplication.ReleaseFrame(); }
                 }
             }
             Err(e) => {
-                if e.code() == DXGI_ERROR_WAIT_TIMEOUT {
-                    // Screen unchanged — skip, avoid flooding encoder with duplicate frames
-                    continue;
-                } else {
+                if e.code() != DXGI_ERROR_WAIT_TIMEOUT {
                     error!("DXGI AcquireNextFrame failed: {:?}", e);
                     break Err(anyhow!("DXGI Error: {:?}", e));
                 }
             }
         }
+
+        // Strict 60fps Throttle to maintain constant smooth stream and avoid network buffer bloat
+        let elapsed = frame_start.elapsed();
+        if elapsed < Duration::from_micros(6944) {
+            tokio::time::sleep(Duration::from_micros(6944) - elapsed).await;
+        }
+        frame_start = tokio::time::Instant::now();
+
+        // Send to encoder (always sends, even if frame didnt change, to keep UDP alive and smooth)
+        match encoder.encode_frame(&bgra_buffer) {
+            Ok(nalu) => {
+                if !nalu.is_empty() {
+                    if tx.send(nalu).await.is_err() {
+                        info!("Capture loop shutting down (receiver dropped)");
+                        break Ok(());
+                    }
+                }
+            }
+            Err(e) => error!("Encoder error: {}", e),
+        }
     }
 }
+
+
+
