@@ -35,42 +35,16 @@ class VideoDecoder(private val surface: Surface, width: Int, height: Int) {
     fun decodeNalu(data: ByteArray) {
         if (!isRunning) return
         try {
-            val naluStarts = mutableListOf<Pair<Int, Int>>()
-            var i = 0
-            while (i < data.size - 2) {
-                if (i < data.size - 3 && data[i] == 0.toByte() && data[i+1] == 0.toByte() && data[i+2] == 0.toByte() && data[i+3] == 1.toByte()) {
-                    naluStarts.add(Pair(i, 4))
-                    i += 4
-                } else if (data[i] == 0.toByte() && data[i+1] == 0.toByte() && data[i+2] == 1.toByte()) {
-                    naluStarts.add(Pair(i, 3))
-                    i += 3
-                } else {
-                    i++
-                }
-            }
-            if (naluStarts.isEmpty()) return
-
-            for (j in 0 until naluStarts.size) {
-                val start = naluStarts[j].first
-                val startCodeLen = naluStarts[j].second
-                val end = if (j == naluStarts.size - 1) data.size else naluStarts[j+1].first
-                val naluSize = end - start
-                
-                // HEVC (H.265) NAL Unit Type Parsing
-                val type = (data[start + startCodeLen].toInt() and 0x7E) ushr 1
-                
-                // VPS (32), SPS (33), PPS (34) are Codec Config frames
-                val flags = if (type == 32 || type == 33 || type == 34) MediaCodec.BUFFER_FLAG_CODEC_CONFIG else 0
-
-                // Fast non-blocking feed to the decoder chip
+            // Do NOT split NALUs! Android MediaCodec expects a complete access unit (frame) per queueInputBuffer call.
+                // Splitting NALUs causes the decoder to treat each slice as a separate frame, resulting in green smudging!
+                val flags = 0 // Modern MediaCodec automatically parses VPS/SPS/PPS inline!
                 val inIndex = decoder.dequeueInputBuffer(-1)
                 if (inIndex >= 0) {
-                    val buffer: ByteBuffer? = decoder.getInputBuffer(inIndex)
+                    val buffer = decoder.getInputBuffer(inIndex)
                     buffer?.clear()
-                    buffer?.put(data, start, naluSize)
-                    decoder.queueInputBuffer(inIndex, 0, naluSize, System.nanoTime() / 1000, flags)
+                    buffer?.put(data)
+                    decoder.queueInputBuffer(inIndex, 0, data.size, System.nanoTime() / 1000, flags)
                 }
-            }
 
             val info = MediaCodec.BufferInfo()
             // 0ms timeout ensures we NEVER block the UDP listener thread.
@@ -95,4 +69,6 @@ class VideoDecoder(private val surface: Surface, width: Int, height: Int) {
         }
     }
 }
+
+
 
