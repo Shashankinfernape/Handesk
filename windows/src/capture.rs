@@ -191,8 +191,8 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
                     error!("DXGI AcquireNextFrame failed: {:?}", e);
                     break Err(anyhow!("DXGI Error: {:?}", e));
                 }
-                // Timeout = screen didn't change. Continue loop — don't encode stale frame.
-                continue;
+                // Timeout = screen didn't change. Fall through and re-encode the existing buffer.
+                // This keeps the stream alive and the Android decoder fed on static screens.
             }
         }
 
@@ -209,15 +209,12 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
         match encoder.encode_frame(&bgra_buffer) {
             Ok(nalu) => {
                 if !nalu.is_empty() {
-                    match tx.try_send(nalu) {
-                        Ok(_) => {},
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            debug!("Dropping stale frame (sender busy — keeping stream real-time)");
-                        },
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                            info!("Capture loop shutting down (receiver dropped)");
-                            break Ok(());
-                        }
+                    // MUST use blocking send — H.265 P-frames reference the previous frame.
+                    // Dropping ANY frame corrupts the entire stream until the next keyframe.
+                    // Channel size 1 in network_udp.rs limits backlog to max 1 frame (16ms).
+                    if tx.send(nalu).await.is_err() {
+                        info!("Capture loop shutting down (receiver dropped)");
+                        break Ok(());
                     }
                 }
             }

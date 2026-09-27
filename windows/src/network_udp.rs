@@ -72,7 +72,7 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
                 }
 
                 // Create channel for capture loop to send us NALUs
-                let (video_tx, mut video_rx) = mpsc::channel::<Vec<u8>>(4);
+                let (video_tx, mut video_rx) = mpsc::channel::<Vec<u8>>(1);
 
                 // Spawn the capture loop
                 let capture_handle = tokio::spawn(async move {
