@@ -274,7 +274,7 @@ fun RemoteSessionScreen(
                     modifier = Modifier.background(if (isPcAudioOn) Color(0x88000000) else Color(0x88FF3B30), CircleShape)
                 ) {
                     Icon(
-                        androidx.compose.material.icons.filled.Home, 
+                        Icons.Filled.Home, 
                         contentDescription = "PC Audio Toggle", 
                         tint = Color.White
                     )
@@ -289,7 +289,7 @@ fun RemoteSessionScreen(
                     modifier = Modifier.background(if (isMobileAudioOn) Color(0x88000000) else Color(0x88FF3B30), CircleShape)
                 ) {
                     Icon(
-                        androidx.compose.material.icons.filled.Phone, 
+                        Icons.Filled.Phone, 
                         contentDescription = "Mobile Audio Toggle", 
                         tint = Color.White
                     )
