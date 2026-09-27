@@ -21,9 +21,10 @@ async fn main() -> Result<()> {
     }
 
     tracing_subscriber::fmt::init();
-    info!("Starting DirectLink Host (FLAWLESS TCP MODE)...");
+    info!("Starting DirectLink Host (Direct IP Server Mode - UDP)...");
 
-    if let Err(e) = network_tcp::start_tcp_server().await {
+    let socket = std::sync::Arc::new(tokio::net::UdpSocket::bind("0.0.0.0:21118").await?);
+    if let Err(e) = network_udp::start_direct_server(socket).await {
         error!("Server crashed: {:?}", e);
     }
 
