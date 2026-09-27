@@ -230,9 +230,9 @@ impl MFEncoder {
             let mut out_data = pre_drain;
             out_data.extend(self.drain_output());
 
-            // Prepend Sequence Header to the very first output frame ONLY! (Android MediaCodec crashes if sent mid-stream)
-            if !out_data.is_empty() && !self.sent_header {
-                // If hardware encoder didn't give us the header at initialization, try grabbing it NOW!
+            // Prepend Sequence Header to every keyframe. Over UDP, if the very first frame is dropped,
+            // the Android decoder can never initialize. We must inject VPS/SPS/PPS periodically.
+            if !out_data.is_empty() {
                 if self.seq_header.is_none() {
                     if let Ok(out_type) = self.transform.GetOutputCurrentType(0) {
                         let mut blob_size = 0u32;
@@ -247,10 +247,28 @@ impl MFEncoder {
                     }
                 }
 
-                if let Some(header) = &self.seq_header {
-                    let mut full_frame = header.clone();
-                    full_frame.extend(&out_data);
-                    out_data = full_frame;
+                // Detect if the output is an HEVC IDR/CRA keyframe (NALU types 19, 20, 21)
+                let mut is_keyframe = false;
+                if out_data.len() > 5 && out_data[0] == 0 && out_data[1] == 0 {
+                    let nalu_type = if out_data[2] == 0 && out_data[3] == 1 {
+                        (out_data[4] & 0x7E) >> 1
+                    } else if out_data[2] == 1 {
+                        (out_data[3] & 0x7E) >> 1
+                    } else { 0 };
+                    
+                    if nalu_type == 19 || nalu_type == 20 || nalu_type == 21 || !self.sent_header {
+                        is_keyframe = true;
+                    }
+                } else if !self.sent_header {
+                    is_keyframe = true;
+                }
+
+                if is_keyframe {
+                    if let Some(header) = &self.seq_header {
+                        let mut full_frame = header.clone();
+                        full_frame.extend(&out_data);
+                        out_data = full_frame;
+                    }
                 }
                 self.sent_header = true;
             }
