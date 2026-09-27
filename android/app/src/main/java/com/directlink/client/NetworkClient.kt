@@ -143,12 +143,26 @@ class NetworkClient {
                     val payload = data.copyOfRange(15, 15 + chunkLen)
                     val nowMs = System.currentTimeMillis()
 
-                    // Evict stale incomplete frames older than 200ms.
-                    // Stale frames are frames where some UDP chunks were lost.
-                    // They will NEVER complete and block the buffer map forever if not evicted.
-                    val staleKeys = frameBuffers.entries.filter { nowMs - it.value.third > 200 }.map { it.key }
-                    DebugStats.framesDropped += staleKeys.size
-                    staleKeys.forEach { frameBuffers.remove(it) }
+                    // Evict stale incomplete frames older than 150ms.
+                    // Instead of dropping them, we forcefully ASSEMBLE what we have and decode it!
+                    // If an IDR frame loses 1 chunk out of 200, we still want the other 199 chunks
+                    // so the decoder can initialize (with artifacting) instead of staying permanently blank.
+                    val staleKeys = frameBuffers.entries.filter { nowMs - it.value.third > 150 }.map { it.key }
+                    for (staleId in staleKeys) {
+                        val entry = frameBuffers[staleId] ?: continue
+                        var assembledSize = 0
+                        for (i in 0 until entry.first) assembledSize += entry.second[i]?.size ?: 0
+                        val frameData = ByteArray(assembledSize)
+                        var offset = 0
+                        for (i in 0 until entry.first) {
+                            val chunk = entry.second[i] ?: continue
+                            System.arraycopy(chunk, 0, frameData, offset, chunk.size)
+                            offset += chunk.size
+                        }
+                        decoderChannel.trySend(frameData)
+                        DebugStats.framesDropped++ // Still count as dropped/corrupted for stats
+                        frameBuffers.remove(staleId)
+                    }
 
                     val frameEntry = frameBuffers.getOrPut(frameId) { Triple(totalChunks, mutableMapOf(), nowMs) }
                     frameEntry.second[chunkIdx] = payload

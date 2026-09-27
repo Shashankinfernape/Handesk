@@ -101,7 +101,7 @@ impl MFEncoder {
             let out_type: IMFMediaType = MFCreateMediaType().context("MFCreateMediaType failed")?;
             out_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
             out_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_HEVC)?; // QUICK WIN: H.265 / HEVC
-            out_type.SetUINT32(&MF_MT_AVG_BITRATE, 8_000_000)?; // 8Mbps HEVC = excellent quality, reliable UDP
+            out_type.SetUINT32(&MF_MT_AVG_BITRATE, 4_000_000)?; // 4Mbps HEVC = 500 KB/s, reliable UDP
             out_type.SetUINT64(&MF_MT_FRAME_RATE, pack_ratio(144, 1))?; // 120 FPS for zero-latency smoothness
             out_type.SetUINT64(&MF_MT_FRAME_SIZE, pack_ratio(width, height))?;
             out_type.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
