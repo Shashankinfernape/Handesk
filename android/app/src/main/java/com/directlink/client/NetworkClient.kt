@@ -20,10 +20,10 @@ class NetworkClient {
     var inputPacketSender: ((ByteArray) -> Unit)? = null
     var videoFrameCallback: ((ByteArray) -> Unit)? = null
 
-    // Decoder channel: UDP listener drops frames into here, decoder coroutine pulls them out.
-    // Channel size 4: allows burst buffering without blocking the UDP receiver thread.
-    // CRITICAL: The UDP listener must NEVER call blocking decoder methods directly!
-    private val decoderChannel = Channel<ByteArray>(capacity = 4, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
+    // Decoder channel: UDP listener drops assembled frames here, decoder coroutine pulls them.
+    // Capacity 16 with DROP_LATEST: if channel fills, NEW frames are dropped, preserving the IDR
+    // already in the queue. IDR frames must never be evicted or the screen stays blank forever.
+    private val decoderChannel = Channel<ByteArray>(capacity = 16, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_LATEST)
 
     // FrameId -> Pair(expectedChunks, MutableMap<ChunkIdx, ByteArray>)
     // Also track arrival time to evict stale incomplete frames

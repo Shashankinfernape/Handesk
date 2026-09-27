@@ -9,11 +9,16 @@ class VideoDecoder(private val surface: Surface, width: Int, height: Int) {
     private val decoder = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC)
     private var isRunning = false
 
+    // IDR gate: drop all P-frames until we successfully receive a keyframe.
+    // Over Tailscale, the decoder initializes slowly. Without this gate, P-frames
+    // arrive before the IDR is decoded and cause a permanently corrupt/blank screen.
+    private var hasReceivedIDR = false
+
     init {
         try {
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, width, height)
             
-            // QUICK WIN: Enable Android Low-Latency Decoding (API 30+)
+            // Enable Android Low-Latency Decoding (API 30+)
             if (android.os.Build.VERSION.SDK_INT >= 30) {
                 format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
             }
@@ -35,20 +40,38 @@ class VideoDecoder(private val surface: Surface, width: Int, height: Int) {
     fun decodeNalu(data: ByteArray) {
         if (!isRunning) return
         try {
-            // Do NOT split NALUs! Android MediaCodec expects a complete access unit (frame) per queueInputBuffer call.
-                // Splitting NALUs causes the decoder to treat each slice as a separate frame, resulting in green smudging!
-                val flags = 0 // Modern MediaCodec automatically parses VPS/SPS/PPS inline!
-                val inIndex = decoder.dequeueInputBuffer(-1)
-                if (inIndex >= 0) {
-                    val buffer = decoder.getInputBuffer(inIndex)
-                    buffer?.clear()
-                    buffer?.put(data)
-                    decoder.queueInputBuffer(inIndex, 0, data.size, System.nanoTime() / 1000, flags)
-                }
+            // Detect if this frame is a keyframe (contains VPS=32, IDR_W_RADL=19, or IDR_N_LP=20)
+            // NVENC always outputs VPS/SPS/PPS/IDR together in one blob for keyframes.
+            val isKeyFrame = containsNaluType(data, 19) ||
+                             containsNaluType(data, 20) ||
+                             containsNaluType(data, 32)
 
+            if (!hasReceivedIDR && !isKeyFrame) {
+                // Drop P-frames until we have a reference keyframe.
+                // P-frames without a reference = guaranteed blank/corrupted screen.
+                DebugStats.framesDropped++
+                return
+            }
+
+            if (isKeyFrame) {
+                // Flush any corrupt state from previous P-frames before feeding the IDR
+                if (hasReceivedIDR) {
+                    try { decoder.flush() } catch (e: Exception) {}
+                }
+                hasReceivedIDR = true
+            }
+
+            // Feed the complete assembled frame to the hardware decoder
+            val inIndex = decoder.dequeueInputBuffer(16_000) // 16ms timeout — OK since we're on own thread
+            if (inIndex >= 0) {
+                val buffer = decoder.getInputBuffer(inIndex)
+                buffer?.clear()
+                buffer?.put(data)
+                decoder.queueInputBuffer(inIndex, 0, data.size, System.nanoTime() / 1000, 0)
+            }
+
+            // Drain all ready output frames to the surface
             val info = MediaCodec.BufferInfo()
-            // 0ms timeout ensures we NEVER block the UDP listener thread.
-            // If the frame isn't ready to render, we instantly return and catch it on the next UDP packet!
             var outIndex = decoder.dequeueOutputBuffer(info, 0)
             while (outIndex >= 0) {
                 decoder.releaseOutputBuffer(outIndex, true)
@@ -57,6 +80,29 @@ class VideoDecoder(private val surface: Surface, width: Int, height: Int) {
         } catch (e: Exception) {
             e.printStackTrace()
         }
+    }
+
+    // Scan an Annex-B H.265 bitstream for a specific NALU type
+    private fun containsNaluType(data: ByteArray, targetType: Int): Boolean {
+        var i = 0
+        while (i < data.size - 4) {
+            val is4ByteStart = data[i] == 0.toByte() && data[i+1] == 0.toByte() &&
+                               data[i+2] == 0.toByte() && data[i+3] == 1.toByte()
+            val is3ByteStart = data[i] == 0.toByte() && data[i+1] == 0.toByte() &&
+                               data[i+2] == 1.toByte()
+            if (is4ByteStart && i + 4 < data.size) {
+                val naluType = (data[i + 4].toInt() and 0x7E) ushr 1
+                if (naluType == targetType) return true
+                i += 4
+            } else if (is3ByteStart && i + 3 < data.size) {
+                val naluType = (data[i + 3].toInt() and 0x7E) ushr 1
+                if (naluType == targetType) return true
+                i += 3
+            } else {
+                i++
+            }
+        }
+        return false
     }
 
     fun stop() {
@@ -69,6 +115,3 @@ class VideoDecoder(private val surface: Surface, width: Int, height: Int) {
         }
     }
 }
-
-
-
