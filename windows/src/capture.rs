@@ -18,6 +18,8 @@ use windows::Win32::Graphics::Dxgi::{
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
+pub static TARGET_BITRATE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(2_000_000);
+
 pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
     info!("Starting DXGI Desktop Duplication capture loop");
 
@@ -152,8 +154,17 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
     let mut encoder = crate::encoder::MFEncoder::new(width, height)?;
     let mut bgra_buffer = vec![0u8; (width * height * 4) as usize];
 
+    let mut current_bitrate = TARGET_BITRATE.load(std::sync::atomic::Ordering::Relaxed);
+    
     let mut frame_start = tokio::time::Instant::now();
     loop {
+        let new_bitrate = TARGET_BITRATE.load(std::sync::atomic::Ordering::Relaxed);
+        if new_bitrate != current_bitrate {
+            current_bitrate = new_bitrate;
+            info!("Dynamic Bitrate Change: {} bps", current_bitrate);
+            encoder.set_bitrate(current_bitrate);
+        }
+
         let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut desktop_resource: Option<IDXGIResource> = None;
         

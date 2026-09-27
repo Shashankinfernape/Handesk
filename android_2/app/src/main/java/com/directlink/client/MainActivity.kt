@@ -20,7 +20,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -254,7 +254,38 @@ fun RemoteSessionScreen(
             }
         )
         
-        // HUD Removed
+        // --- QUALITY SETTINGS GEAR ---
+        var expanded by remember { mutableStateOf(false) }
+        Box(modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)) {
+            IconButton(
+                onClick = { expanded = true },
+                modifier = Modifier.background(Color(0x88000000), CircleShape)
+            ) {
+                Icon(Icons.Filled.Settings, contentDescription = "Quality Settings", tint = Color.White)
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+                modifier = Modifier.background(Color(0xFF1E1E24))
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Low (1 Mbps)", color = Color.White) },
+                    onClick = { networkClient.sendQualityChange(0); expanded = false }
+                )
+                DropdownMenuItem(
+                    text = { Text("Medium (2 Mbps)", color = Color.White) },
+                    onClick = { networkClient.sendQualityChange(1); expanded = false }
+                )
+                DropdownMenuItem(
+                    text = { Text("High (5 Mbps)", color = Color.White) },
+                    onClick = { networkClient.sendQualityChange(2); expanded = false }
+                )
+                DropdownMenuItem(
+                    text = { Text("Ultra (15 Mbps)", color = Color.White) },
+                    onClick = { networkClient.sendQualityChange(3); expanded = false }
+                )
+            }
+        }
         
         // --- HIDDEN KEYBOARD INJECTOR ---
         BasicTextField(

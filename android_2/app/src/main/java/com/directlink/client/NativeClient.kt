@@ -76,6 +76,13 @@ class NativeClient {
         sendInputPacket(payload)
     }
 
+    fun sendQualityChange(level: Int) {
+        val payload = ByteArray(2)
+        payload[0] = 0x05
+        payload[1] = level.toByte()
+        sendInputPacket(payload)
+    }
+
     // JNI External hooks
     private external fun connectNative(ip: String, surface: Surface)
     private external fun disconnectNative()

@@ -40,6 +40,19 @@ pub fn handle_input_payload(payload: &[u8]) {
                 inject_key(vk_code, down);
             }
         }
+        0x05 => { // Quality Settings
+            if payload.len() >= 2 {
+                let quality = payload[1];
+                let new_bitrate = match quality {
+                    0 => 1_000_000,   // Low
+                    1 => 2_000_000,   // Medium
+                    2 => 5_000_000,   // High
+                    3 => 15_000_000,  // Ultra
+                    _ => 2_000_000,
+                };
+                crate::capture::TARGET_BITRATE.store(new_bitrate, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
         _ => {}
     }
 }
