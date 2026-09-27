@@ -96,17 +96,7 @@ class NetworkClient {
                             read += r
                         }
                         
-                        // IDR check so we don't start on a P-frame
-                        if (!hasReceivedIDR) {
-                            var isKeyFrame = false
-                            // Simplistic IDR check for H.265 (NAL type 19, 20, 32)
-                            if (frameData.size > 5) {
-                                val naluType = (frameData[4].toInt() and 0x7E) shr 1
-                                if (naluType == 19 || naluType == 20 || naluType == 32) isKeyFrame = true
-                            }
-                            if (!isKeyFrame) continue
-                            hasReceivedIDR = true
-                        }
+                        // Removed IDR manual byte parsing! Let the hardware decoder handle it.
                         DebugStats.framesCompleted++
                         decoderChannel.trySend(frameData)
                     }
