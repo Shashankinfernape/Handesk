@@ -95,6 +95,8 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
                 });
                 current_audio_task = Some(audio_handle);
 
+                // --- AUDIO DISABLED FOR NOW TO PREVENT VIDEO CHOKING ---
+                /*
                 // Spawn the AUDIO sender loop
                 let socket_audio = socket.clone();
                 tokio::spawn(async move {
@@ -102,9 +104,6 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
                     while let Some(pcm) = audio_rx.recv().await {
                         audio_sequence = audio_sequence.wrapping_add(1);
                         
-                        // We assume audio chunks are small enough to fit in one UDP packet (< 1400 bytes)
-                        // cpal usually gives ~10ms chunks (480 samples * 4 bytes = 1920 bytes)
-                        // Actually, 1920 might exceed MTU (1500). Let's chunk the audio just in case.
                         let audio_mtu = 1200;
                         let total_chunks = ((pcm.len() + audio_mtu - 1) / audio_mtu) as u16;
                         
@@ -122,6 +121,7 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
                         }
                     }
                 });
+                */
 
                 // Spawn the VIDEO sender loop for THIS specific client
                 let socket_clone = socket.clone();
