@@ -26,7 +26,6 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
     
     let mut best_device: Option<ID3D11Device> = None;
     let mut best_context: Option<ID3D11DeviceContext> = None;
-    let mut best_dxgi_device: Option<IDXGIDevice> = None;
     let mut best_output: Option<windows::Win32::Graphics::Dxgi::IDXGIOutput1> = None;
     let mut best_duplication: Option<windows::Win32::Graphics::Dxgi::IDXGIOutputDuplication> = None;
     
@@ -65,7 +64,6 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
                                     info!("SUCCESS! Found correct GPU (Adapter {}) and Monitor ({}) for Desktop Duplication!", i, j);
                                     best_device = Some(d3d_device);
                                     best_context = Some(d3d_context);
-                                    best_dxgi_device = Some(dxgi_device);
                                     best_output = Some(output1);
                                     best_duplication = Some(duplication);
                                     break 'outer;
@@ -159,8 +157,9 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
         let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut desktop_resource: Option<IDXGIResource> = None;
         
+        // Wait up to 16ms for a new frame (60fps). This prevents CPU spinning on idle screens.
         let res = unsafe {
-            duplication.AcquireNextFrame(0, &mut frame_info, &mut desktop_resource)
+            duplication.AcquireNextFrame(16, &mut frame_info, &mut desktop_resource)
         };
 
         match res {
@@ -180,21 +179,11 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
                             bgra_buffer[dst_start..dst_start+row_width].copy_from_slice(&src_slice[src_start..src_start+row_width]);
                         }
                         d3d_context.Unmap(&staging_texture, 0);
-                        
-                        // DEBUG: Draw a 100x100 RED square in the top left corner of the buffer
-                        for y in 0..100 {
-                            for x in 0..100 {
-                                let idx = (y * (width as usize) + x) * 4;
-                                bgra_buffer[idx] = 0;       // B
-                                bgra_buffer[idx+1] = 0;     // G
-                                bgra_buffer[idx+2] = 255;   // R
-                                bgra_buffer[idx+3] = 255;   // A
-                            }
-                        }
                         let _ = duplication.ReleaseFrame();
                     }
                 } else {
                     unsafe { let _ = duplication.ReleaseFrame(); }
+                    continue; // No actual pixel data, skip encoding
                 }
             }
             Err(e) => {
@@ -202,23 +191,33 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
                     error!("DXGI AcquireNextFrame failed: {:?}", e);
                     break Err(anyhow!("DXGI Error: {:?}", e));
                 }
+                // Timeout = screen didn't change. Continue loop — don't encode stale frame.
+                continue;
             }
         }
 
-        // Strict 60fps Throttle to maintain constant smooth stream and avoid network buffer bloat
+        // 60fps throttle: keeps stream smooth without flooding the network
         let elapsed = frame_start.elapsed();
-        if elapsed < Duration::from_micros(6944) {
-            tokio::time::sleep(Duration::from_micros(6944) - elapsed).await;
+        if elapsed < Duration::from_micros(16_667) {
+            tokio::time::sleep(Duration::from_micros(16_667) - elapsed).await;
         }
         frame_start = tokio::time::Instant::now();
 
-        // Send to encoder (always sends, even if frame didnt change, to keep UDP alive and smooth)
+        // Encode and send — CRITICAL: use try_send to NEVER block!
+        // If the channel is full (sender is busy), DROP the stale frame instantly.
+        // The next fresh frame will arrive in 16ms. This eliminates "stuck/delayed" latency buildup.
         match encoder.encode_frame(&bgra_buffer) {
             Ok(nalu) => {
                 if !nalu.is_empty() {
-                    if tx.send(nalu).await.is_err() {
-                        info!("Capture loop shutting down (receiver dropped)");
-                        break Ok(());
+                    match tx.try_send(nalu) {
+                        Ok(_) => {},
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            debug!("Dropping stale frame (sender busy — keeping stream real-time)");
+                        },
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            info!("Capture loop shutting down (receiver dropped)");
+                            break Ok(());
+                        }
                     }
                 }
             }
@@ -226,6 +225,3 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
         }
     }
 }
-
-
-
