@@ -95,8 +95,8 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
                 });
                 current_audio_task = Some(audio_handle);
 
-                // --- AUDIO DISABLED FOR NOW TO PREVENT VIDEO CHOKING ---
-                /*
+                
+                
                 // Spawn the AUDIO sender loop
                 let socket_audio = socket.clone();
                 tokio::spawn(async move {
@@ -121,7 +121,7 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
                         }
                     }
                 });
-                */
+                
 
                 // Spawn the VIDEO sender loop for THIS specific client
                 let socket_clone = socket.clone();

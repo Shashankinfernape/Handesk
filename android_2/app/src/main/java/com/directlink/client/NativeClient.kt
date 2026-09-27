@@ -1,5 +1,8 @@
 package com.directlink.client
 
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioTrack
 import android.view.Surface
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -13,6 +16,20 @@ class NativeClient {
         private set
 
     private var activeIp: String = ""
+    
+    private val audioTrack = AudioTrack(
+        AudioManager.STREAM_MUSIC,
+        48000,
+        AudioFormat.CHANNEL_OUT_STEREO,
+        AudioFormat.ENCODING_PCM_16BIT,
+        AudioTrack.getMinBufferSize(48000, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT) * 4,
+        AudioTrack.MODE_STREAM
+    ).apply { play() }
+
+    // Called from C++ JNI when an 0x08 packet arrives
+    fun onAudioData(pcmData: ByteArray) {
+        audioTrack.write(pcmData, 0, pcmData.size)
+    }
 
     suspend fun connectToHost(localIp: String, publicAddr: String = ""): String? = withContext(Dispatchers.IO) {
         val host = if (localIp.contains(":")) localIp.substringBefore(":") else localIp

@@ -17,6 +17,10 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
+JavaVM* g_jvm = nullptr;
+jobject g_obj = nullptr;
+jmethodID g_onAudioData_method = nullptr;
+
 std::atomic<bool> is_running(false);
 std::thread network_thread;
 int udp_socket = -1;
@@ -85,6 +89,9 @@ void decode_nalu(const std::vector<uint8_t>& data) {
 struct sockaddr_in target_addr_global;
 
 void network_loop(std::string ip) {
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    if (g_jvm && g_jvm->AttachCurrentThread(&env, nullptr) == JNI_OK) attached = true;
     LOGI("Network loop started for %s", ip.c_str());
     
     udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
@@ -111,7 +118,21 @@ void network_loop(std::string ip) {
         ssize_t len = recvfrom(udp_socket, buf, sizeof(buf), 0, nullptr, nullptr);
         if (len < 15) continue;
 
-        if (buf[0] != 'D' || buf[1] != 'L' || buf[2] != 'P' || buf[3] != '1' || buf[4] != 0x06) continue;
+        if (buf[0] != 'D' || buf[1] != 'L' || buf[2] != 'P' || buf[3] != '1') continue;
+
+        if (buf[4] == 0x08) {
+            uint16_t chunk_len = (buf[14] << 8) | buf[13];
+            if (15 + chunk_len > len) continue;
+            if (attached && g_obj && g_onAudioData_method) {
+                jbyteArray j_pcm = env->NewByteArray(chunk_len);
+                env->SetByteArrayRegion(j_pcm, 0, chunk_len, (jbyte*)(buf + 15));
+                env->CallVoidMethod(g_obj, g_onAudioData_method, j_pcm);
+                env->DeleteLocalRef(j_pcm);
+            }
+            continue;
+        }
+
+        if (buf[4] != 0x06) continue;
 
         uint32_t frame_id = (buf[8] << 24) | (buf[7] << 16) | (buf[6] << 8) | buf[5];
         uint16_t chunk_idx = (buf[10] << 8) | buf[9];
@@ -154,6 +175,7 @@ void network_loop(std::string ip) {
     close(udp_socket);
     udp_socket = -1;
     LOGI("Network loop shutting down");
+    if (attached) g_jvm->DetachCurrentThread();
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -161,6 +183,12 @@ Java_com_directlink_client_NativeClient_connectNative(JNIEnv* env, jobject thiz,
     if (is_running) return;
     
     const char* ip_cstr = env->GetStringUTFChars(ip_jstr, nullptr);
+    env->GetJavaVM(&g_jvm);
+    if (g_obj) env->DeleteGlobalRef(g_obj);
+    g_obj = env->NewGlobalRef(thiz);
+    jclass clazz = env->GetObjectClass(thiz);
+    g_onAudioData_method = env->GetMethodID(clazz, "onAudioData", "([B)V");
+    env->DeleteLocalRef(clazz);
     std::string ip(ip_cstr);
     env->ReleaseStringUTFChars(ip_jstr, ip_cstr);
 
