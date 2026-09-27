@@ -211,7 +211,6 @@ Java_com_directlink_client_NativeClient_sendInputNative(JNIEnv* env, jobject thi
     
     jbyte* buffer_ptr = env->GetByteArrayElements(packet, nullptr);
     if (buffer_ptr) {
-        extern struct sockaddr_in target_addr_global;
         sendto(udp_socket, buffer_ptr, len, 0, (struct sockaddr*)&target_addr_global, sizeof(target_addr_global));
         env->ReleaseByteArrayElements(packet, buffer_ptr, JNI_ABORT);
     }

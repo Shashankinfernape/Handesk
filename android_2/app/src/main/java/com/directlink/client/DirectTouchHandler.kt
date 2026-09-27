@@ -7,7 +7,7 @@ import android.view.View
 import android.os.Handler
 import android.os.Looper
 
-class DirectTouchHandler(private val networkClient: NetworkClient, private val view: View) : View.OnTouchListener {
+class DirectTouchHandler(private val networkClient: NativeClient, private val view: View) : View.OnTouchListener {
     
     private var isHoldDragging = false
     private var lastScrollY = 0f
