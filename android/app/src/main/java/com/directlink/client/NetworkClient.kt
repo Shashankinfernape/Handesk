@@ -1,6 +1,7 @@
 package com.directlink.client
 
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
@@ -19,8 +20,14 @@ class NetworkClient {
     var inputPacketSender: ((ByteArray) -> Unit)? = null
     var videoFrameCallback: ((ByteArray) -> Unit)? = null
 
+    // Decoder channel: UDP listener drops frames into here, decoder coroutine pulls them out.
+    // Channel size 4: allows burst buffering without blocking the UDP receiver thread.
+    // CRITICAL: The UDP listener must NEVER call blocking decoder methods directly!
+    private val decoderChannel = Channel<ByteArray>(capacity = 4, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
+
     // FrameId -> Pair(expectedChunks, MutableMap<ChunkIdx, ByteArray>)
-    private val frameBuffers = mutableMapOf<Int, Pair<Int, MutableMap<Int, ByteArray>>>()
+    // Also track arrival time to evict stale incomplete frames
+    private val frameBuffers = mutableMapOf<Int, Triple<Int, MutableMap<Int, ByteArray>, Long>>()
 
     suspend fun connectToHost(localIp: String, publicAddr: String = ""): String? = withContext(Dispatchers.IO) {
         try {
@@ -89,11 +96,24 @@ class NetworkClient {
     private fun startUdpVideoListener() {
         listenerJob?.cancel()
         listenerJob = scope.launch {
-            // QUICK WIN: Boost thread priority to URGENT so OS never pauses our UDP packet receiver
+            // CRITICAL: Boost thread priority so OS never pauses our UDP packet receiver
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
 
             val buf = ByteArray(2048)
             val packet = DatagramPacket(buf, buf.size)
+
+            // Launch the DECODER on a completely separate coroutine/thread.
+            // The UDP listener must NEVER call blocking decoder methods (dequeueInputBuffer etc.)
+            // or the socket receive buffer overflows and we lose packets -> P-frame corruption!
+            val decoderJob = launch(Dispatchers.Default) {
+                for (frameData in decoderChannel) {
+                    try {
+                        videoFrameCallback?.invoke(frameData)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+            }
 
             while (isActive) {
                 try {
@@ -121,12 +141,20 @@ class NetworkClient {
                     if (len < 15 + chunkLen) continue
 
                     val payload = data.copyOfRange(15, 15 + chunkLen)
+                    val nowMs = System.currentTimeMillis()
 
-                    val frameEntry = frameBuffers.getOrPut(frameId) { Pair(totalChunks, mutableMapOf()) }
+                    // Evict stale incomplete frames older than 200ms.
+                    // Stale frames are frames where some UDP chunks were lost.
+                    // They will NEVER complete and block the buffer map forever if not evicted.
+                    val staleKeys = frameBuffers.entries.filter { nowMs - it.value.third > 200 }.map { it.key }
+                    DebugStats.framesDropped += staleKeys.size
+                    staleKeys.forEach { frameBuffers.remove(it) }
+
+                    val frameEntry = frameBuffers.getOrPut(frameId) { Triple(totalChunks, mutableMapOf(), nowMs) }
                     frameEntry.second[chunkIdx] = payload
 
                     if (frameEntry.second.size == frameEntry.first) {
-                        // All chunks received ?" assemble frame
+                        // All chunks received — assemble the complete frame
                         var assembledSize = 0
                         for (i in 0 until frameEntry.first) assembledSize += frameEntry.second[i]?.size ?: 0
 
@@ -138,20 +166,23 @@ class NetworkClient {
                             offset += chunk.size
                         }
 
-                        // Clean up old frames (UDP drops frames naturally if packets are lost!)
-                        val oldKeys = frameBuffers.keys.filter { it < frameId }
-                        DebugStats.framesDropped += oldKeys.size
+                        // Remove this and all older frames
+                        val oldKeys = frameBuffers.keys.filter { it <= frameId }
+                        DebugStats.framesDropped += (oldKeys.size - 1).coerceAtLeast(0)
                         oldKeys.forEach { frameBuffers.remove(it) }
-                        frameBuffers.remove(frameId)
 
                         DebugStats.framesCompleted++
-                        videoFrameCallback?.invoke(frameData)
+                        
+                        // NON-BLOCKING: Drop into decoder channel instead of calling decoder directly!
+                        // DROP_OLDEST policy ensures decoder is always working on the freshest frame.
+                        decoderChannel.trySend(frameData)
                     }
                 } catch (e: Exception) {
                     // Socket closed or timeout
                     if (isActive) e.printStackTrace()
                 }
             }
+            decoderJob.cancel()
         }
     }
 
@@ -217,6 +248,7 @@ class NetworkClient {
     fun disconnect() {
         listenerJob?.cancel()
         listenerJob = null
+        decoderChannel.close()
         socket?.close()
         socket = null
     }
@@ -253,6 +285,3 @@ class NetworkClient {
     }
 
 }
-
-
-
