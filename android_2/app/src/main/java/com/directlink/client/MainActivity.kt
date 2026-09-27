@@ -46,6 +46,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+        androidx.core.view.WindowInsetsControllerCompat(window, window.decorView).let { controller ->
+            controller.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+
         setContent {
             DirectLinkApp(networkClient, this)
         }
@@ -247,24 +254,7 @@ fun RemoteSessionScreen(
             }
         )
         
-        // --- DIAGNOSTIC HUD ---
-        Column(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(16.dp)
-                .background(Color(0x88000000), RoundedCornerShape(8.dp))
-                .padding(16.dp)
-        ) {
-            Text("DIRECTLINK DEBUG", color = Color.Yellow, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-            Spacer(modifier = Modifier.height(4.dp))
-            Text("Pkts Rx: ${DebugStats.packetsReceived}", color = Color.White, fontSize = 10.sp)
-            Text("Frames OK: ${DebugStats.framesCompleted}", color = Color.Green, fontSize = 10.sp)
-            Text("Frames Drop: ${DebugStats.framesDropped}", color = Color.Red, fontSize = 10.sp)
-            Text("Decoded: ${DebugStats.framesDecoded}", color = Color.Cyan, fontSize = 10.sp)
-            if (DebugStats.lastError.isNotEmpty()) {
-                Text("ERR: ${DebugStats.lastError}", color = Color.Red, fontSize = 10.sp)
-            }
-        }
+        // HUD Removed
         
         // --- HIDDEN KEYBOARD INJECTOR ---
         BasicTextField(
