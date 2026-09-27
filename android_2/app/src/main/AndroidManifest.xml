@@ -10,6 +10,7 @@
         android:allowBackup="true"
         android:label="DirectLink"
         android:supportsRtl="true"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
         android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
