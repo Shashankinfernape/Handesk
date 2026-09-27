@@ -13,6 +13,7 @@ class NetworkClient {
     private var serverAddress: InetAddress? = null
     private var targetPort = 21118
     private var listenerJob: Job? = null
+    private var decoderJob: Job? = null
 
     val isConnected: Boolean
         get() = socket != null
@@ -106,8 +107,6 @@ class NetworkClient {
                             if (!isKeyFrame) continue
                             hasReceivedIDR = true
                         }
-                        
-                        DebugStats.framesReceived++
                         DebugStats.framesCompleted++
                         decoderChannel.trySend(frameData)
                     }
@@ -296,8 +295,8 @@ class NetworkClient {
     private fun sendInputPacket(payload: ByteArray) {
         scope.launch {
             try {
-                // Prepend MAGIC (4) + INPUT TYPE (0x07)
-                val fullPacket = ByteArray(5 + payload.size)
+                // FIXED SIZE TCP FRAMING: Always send exactly 15 bytes so the Windows reader doesn't corrupt the stream!
+                val fullPacket = ByteArray(15)
                 fullPacket[0] = 'D'.code.toByte()
                 fullPacket[1] = 'L'.code.toByte()
                 fullPacket[2] = 'P'.code.toByte()
