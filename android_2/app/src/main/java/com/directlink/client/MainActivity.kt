@@ -255,49 +255,64 @@ fun RemoteSessionScreen(
         )
         
         // --- QUALITY SETTINGS GEAR ---
-        var expanded by remember { mutableStateOf(false) }
+        var showSheet by remember { mutableStateOf(false) }
         var currentQuality by remember { mutableStateOf("Auto") }
         
         Box(modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)) {
             IconButton(
-                onClick = { expanded = true },
+                onClick = { showSheet = true },
                 modifier = Modifier.background(Color(0x88000000), CircleShape)
             ) {
                 Icon(Icons.Filled.Settings, contentDescription = "Quality Settings", tint = Color.White)
             }
-            DropdownMenu(
-                expanded = expanded,
-                onDismissRequest = { expanded = false },
-                modifier = Modifier.background(Color(0xFF1E1E24))
-            ) {
-                val options = listOf(
-                    "1080p HD" to 5,
-                    "720p" to 4,
-                    "480p" to 3,
-                    "360p" to 2,
-                    "240p" to 1,
-                    "144p" to 0,
-                    "Auto" to 4 // Auto defaults to 720p for now
-                )
+        }
 
-                options.forEach { (label, level) ->
-                    DropdownMenuItem(
-                        text = { 
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (currentQuality == label) {
-                                    Text("✓ ", color = Color.White, fontWeight = FontWeight.Bold)
-                                } else {
-                                    Text("   ", color = Color.White) // Spacing for alignment
-                                }
-                                Text(label, color = Color.White)
-                            }
-                        },
-                        onClick = { 
-                            currentQuality = label
-                            networkClient.sendQualityChange(level)
-                            expanded = false 
-                        }
+        if (showSheet) {
+            @OptIn(ExperimentalMaterial3Api::class)
+            ModalBottomSheet(
+                onDismissRequest = { showSheet = false },
+                containerColor = Color(0xFF212121)
+            ) {
+                Column(modifier = Modifier.padding(bottom = 32.dp)) {
+                    Text(
+                        text = "Quality for current connection",
+                        color = Color.Gray,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        fontSize = 14.sp
                     )
+                    
+                    val options = listOf(
+                        "Source (Lossless)" to 7,
+                        "1440p HD" to 6,
+                        "1080p HD" to 5,
+                        "720p" to 4,
+                        "480p" to 3,
+                        "360p" to 2,
+                        "240p" to 1,
+                        "144p" to 0,
+                        "Auto" to 4
+                    )
+                    
+                    options.forEach { (label, level) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { 
+                                    currentQuality = label
+                                    networkClient.sendQualityChange(level)
+                                    showSheet = false 
+                                }
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (currentQuality == label) {
+                                Text("✓ ", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.width(24.dp))
+                            } else {
+                                Spacer(modifier = Modifier.width(24.dp))
+                            }
+                            Text(label, color = Color.White, fontSize = 16.sp)
+                        }
+                    }
                 }
             }
         }
