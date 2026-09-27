@@ -256,6 +256,8 @@ fun RemoteSessionScreen(
         
         // --- QUALITY SETTINGS GEAR ---
         var expanded by remember { mutableStateOf(false) }
+        var currentQuality by remember { mutableStateOf("Auto") }
+        
         Box(modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)) {
             IconButton(
                 onClick = { expanded = true },
@@ -268,22 +270,35 @@ fun RemoteSessionScreen(
                 onDismissRequest = { expanded = false },
                 modifier = Modifier.background(Color(0xFF1E1E24))
             ) {
-                DropdownMenuItem(
-                    text = { Text("Low (1 Mbps)", color = Color.White) },
-                    onClick = { networkClient.sendQualityChange(0); expanded = false }
+                val options = listOf(
+                    "1080p HD" to 5,
+                    "720p" to 4,
+                    "480p" to 3,
+                    "360p" to 2,
+                    "240p" to 1,
+                    "144p" to 0,
+                    "Auto" to 4 // Auto defaults to 720p for now
                 )
-                DropdownMenuItem(
-                    text = { Text("Medium (2 Mbps)", color = Color.White) },
-                    onClick = { networkClient.sendQualityChange(1); expanded = false }
-                )
-                DropdownMenuItem(
-                    text = { Text("High (5 Mbps)", color = Color.White) },
-                    onClick = { networkClient.sendQualityChange(2); expanded = false }
-                )
-                DropdownMenuItem(
-                    text = { Text("Ultra (15 Mbps)", color = Color.White) },
-                    onClick = { networkClient.sendQualityChange(3); expanded = false }
-                )
+
+                options.forEach { (label, level) ->
+                    DropdownMenuItem(
+                        text = { 
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (currentQuality == label) {
+                                    Text("✓ ", color = Color.White, fontWeight = FontWeight.Bold)
+                                } else {
+                                    Text("   ", color = Color.White) // Spacing for alignment
+                                }
+                                Text(label, color = Color.White)
+                            }
+                        },
+                        onClick = { 
+                            currentQuality = label
+                            networkClient.sendQualityChange(level)
+                            expanded = false 
+                        }
+                    )
+                }
             }
         }
         

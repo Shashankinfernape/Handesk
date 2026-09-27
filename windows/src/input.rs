@@ -44,11 +44,13 @@ pub fn handle_input_payload(payload: &[u8]) {
             if payload.len() >= 2 {
                 let quality = payload[1];
                 let new_bitrate = match quality {
-                    0 => 1_000_000,   // Low
-                    1 => 2_000_000,   // Medium
-                    2 => 5_000_000,   // High
-                    3 => 15_000_000,  // Ultra
-                    _ => 2_000_000,
+                    0 => 500_000,     // 144p
+                    1 => 1_000_000,   // 240p
+                    2 => 3_000_000,   // 360p
+                    3 => 5_000_000,   // 480p
+                    4 => 10_000_000,  // 720p
+                    5 => 15_000_000,  // 1080p
+                    _ => 5_000_000,
                 };
                 crate::capture::TARGET_BITRATE.store(new_bitrate, std::sync::atomic::Ordering::Relaxed);
             }
