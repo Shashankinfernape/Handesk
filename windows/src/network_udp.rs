@@ -50,12 +50,12 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
 
                 // Auto-detect Tailscale connection (100.x.x.x IP range)
                 let is_tailscale = matches!(remote_addr.ip(), std::net::IpAddr::V4(ip) if ip.octets()[0] == 100);
-                let pace_us: u128 = if is_tailscale { 400 } else { 300 };
+                let pace_us: u128 = if is_tailscale { 800 } else { 300 };
 
                 info!("========================================");
                 info!(" CLIENT CONNECTED: {:?}", remote_addr);
                 if is_tailscale {
-                    info!(" Mode: TAILSCALE (Internet) — 400us pacing (24Mbps)");
+                    info!(" Mode: TAILSCALE (Internet) — 800us pacing (12Mbps)");
                 } else {
                     info!(" Mode: LOCAL Wi-Fi — 300us fast pacing");
                 }

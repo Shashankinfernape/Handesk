@@ -150,39 +150,44 @@ class NetworkClient {
                     val payload = data.copyOfRange(15, 15 + chunkLen)
                     val nowMs = System.currentTimeMillis()
 
-                    // Evict stale incomplete frames older than 150ms.
-                    // Now that IDR format is fixed, we DO NOT assemble incomplete frames.
-                    // Stitching chunks together with missing pieces shifts the byte offsets and causes
-                    // insane visual glitching. Dropping them causes a tiny stutter but keeps quality perfect.
                     val staleKeys = frameBuffers.entries.filter { nowMs - it.value.third > 150 }.map { it.key }
-                    DebugStats.framesDropped += staleKeys.size
-                    staleKeys.forEach { frameBuffers.remove(it) }
+                    for (staleId in staleKeys) {
+                        val entry = frameBuffers[staleId] ?: continue
+                        // ASSEMBLE STALE FRAME EXACTLY AT OFFSETS
+                        var maxOffset = 0
+                        for ((idx, chunk) in entry.second) {
+                            maxOffset = maxOf(maxOffset, (idx * 1200) + chunk.size)
+                        }
+                        if (maxOffset > 0) {
+                            val frameData = ByteArray(maxOffset)
+                            for ((idx, chunk) in entry.second) {
+                                System.arraycopy(chunk, 0, frameData, idx * 1200, chunk.size)
+                            }
+                            decoderChannel.trySend(frameData)
+                        }
+                        DebugStats.framesDropped++ 
+                        frameBuffers.remove(staleId)
+                    }
 
                     val frameEntry = frameBuffers.getOrPut(frameId) { Triple(totalChunks, mutableMapOf(), nowMs) }
                     frameEntry.second[chunkIdx] = payload
 
                     if (frameEntry.second.size == frameEntry.first) {
-                        // All chunks received — assemble the complete frame
-                        var assembledSize = 0
-                        for (i in 0 until frameEntry.first) assembledSize += frameEntry.second[i]?.size ?: 0
-
-                        val frameData = ByteArray(assembledSize)
-                        var offset = 0
-                        for (i in 0 until frameEntry.first) {
-                            val chunk = frameEntry.second[i] ?: continue
-                            System.arraycopy(chunk, 0, frameData, offset, chunk.size)
-                            offset += chunk.size
+                        // All chunks received — assemble exactly
+                        var maxOffset = 0
+                        for ((idx, chunk) in frameEntry.second) {
+                            maxOffset = maxOf(maxOffset, (idx * 1200) + chunk.size)
+                        }
+                        val frameData = ByteArray(maxOffset)
+                        for ((idx, chunk) in frameEntry.second) {
+                            System.arraycopy(chunk, 0, frameData, idx * 1200, chunk.size)
                         }
 
-                        // Remove this and all older frames
                         val oldKeys = frameBuffers.keys.filter { it <= frameId }
                         DebugStats.framesDropped += (oldKeys.size - 1).coerceAtLeast(0)
                         oldKeys.forEach { frameBuffers.remove(it) }
 
                         DebugStats.framesCompleted++
-                        
-                        // NON-BLOCKING: Drop into decoder channel instead of calling decoder directly!
-                        // DROP_OLDEST policy ensures decoder is always working on the freshest frame.
                         decoderChannel.trySend(frameData)
                     }
                 } catch (e: Exception) {
