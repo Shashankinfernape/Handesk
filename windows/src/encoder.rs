@@ -102,7 +102,12 @@ impl MFEncoder {
             out_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
             out_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_HEVC)?; // QUICK WIN: H.265 / HEVC
             out_type.SetUINT32(&MF_MT_AVG_BITRATE, 4_000_000)?; // 4Mbps HEVC = 500 KB/s, reliable UDP
-            out_type.SetUINT64(&MF_MT_FRAME_RATE, pack_ratio(144, 1))?; // 120 FPS for zero-latency smoothness
+            
+            // CRITICAL GLITCH FIX: Android tablets cannot hardware decode 144fps HEVC.
+            // When we blast 144fps, the Android decoder queue overflows and drops P-frames.
+            // Dropping P-frames permanently corrupts the screen (smearing/stuck pixels).
+            out_type.SetUINT64(&MF_MT_FRAME_RATE, pack_ratio(60, 1))?; 
+            
             out_type.SetUINT64(&MF_MT_FRAME_SIZE, pack_ratio(width, height))?;
             out_type.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
             transform.SetOutputType(0, &out_type, 0).context("SetOutputType (H264) failed")?;
@@ -134,7 +139,7 @@ impl MFEncoder {
             let in_type: IMFMediaType = MFCreateMediaType()?;
             in_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
             in_type.SetGUID(&MF_MT_SUBTYPE, &windows::Win32::Media::MediaFoundation::MFVideoFormat_NV12)?;
-            in_type.SetUINT64(&MF_MT_FRAME_RATE, pack_ratio(144, 1))?;
+            in_type.SetUINT64(&MF_MT_FRAME_RATE, pack_ratio(60, 1))?;
             in_type.SetUINT64(&MF_MT_FRAME_SIZE, pack_ratio(width, height))?;
             in_type.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
             transform.SetInputType(0, &in_type, 0).context("SetInputType (NV12) failed")?;
@@ -206,10 +211,10 @@ impl MFEncoder {
             input_mf_buffer.Unlock()?;
 
             // Step 4: Set timestamp and push to encoder
-            // 10,000,000 units/sec @ 30 fps = 333,333 units/frame
+            // 10,000,000 units/sec @ 60 fps = 166,666 units/frame
             input_sample.SetSampleTime(self.time)?;
-            input_sample.SetSampleDuration(333333)?;
-            self.time += 333333;
+            input_sample.SetSampleDuration(166666)?;
+            self.time += 166666;
 
             let mut retry_count = 0;
             while retry_count < 10 {

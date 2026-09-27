@@ -34,6 +34,13 @@ class NetworkClient {
             if (socket == null || socket?.isClosed == true) {
                 socket = DatagramSocket() // Bind to any local port
             }
+            
+            // CRITICAL UDP FIX: The default Android UDP socket buffer is only ~128KB.
+            // When NVENC bursts a keyframe or a complex P-frame (e.g. 50+ packets instantly),
+            // the Android OS network stack drops them before our app can even read them!
+            // Increasing this to 4MB guarantees the OS will hold the packets until we parse them.
+            try { socket?.receiveBufferSize = 1024 * 1024 * 4 } catch(e: Exception){}
+            
             socket?.soTimeout = 1500 // Increased timeout for PC init for volley
             targetPort = 21118
 
