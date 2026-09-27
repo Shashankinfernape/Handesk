@@ -209,6 +209,7 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
         match encoder.encode_frame(&bgra_buffer) {
             Ok(nalu) => {
                 if !nalu.is_empty() {
+                    info!("Encoded frame size: {} bytes. Sending...", nalu.len());
                     // MUST use blocking send — H.265 P-frames reference the previous frame.
                     // Dropping ANY frame corrupts the entire stream until the next keyframe.
                     // Channel size 1 in network_udp.rs limits backlog to max 1 frame (16ms).
@@ -216,6 +217,8 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
                         info!("Capture loop shutting down (receiver dropped)");
                         break Ok(());
                     }
+                } else {
+                    debug!("Encoder returned empty frame (needs more input).");
                 }
             }
             Err(e) => error!("Encoder error: {}", e),

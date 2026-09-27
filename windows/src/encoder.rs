@@ -230,48 +230,11 @@ impl MFEncoder {
             let mut out_data = pre_drain;
             out_data.extend(self.drain_output());
 
-            // Prepend Sequence Header to every keyframe. Over UDP, if the very first frame is dropped,
-            // the Android decoder can never initialize. We must inject VPS/SPS/PPS periodically.
-            if !out_data.is_empty() {
-                if self.seq_header.is_none() {
-                    if let Ok(out_type) = self.transform.GetOutputCurrentType(0) {
-                        let mut blob_size = 0u32;
-                        let mut p_blob = std::ptr::null_mut();
-                        if out_type.GetAllocatedBlob(&windows::Win32::Media::MediaFoundation::MF_MT_MPEG_SEQUENCE_HEADER, &mut p_blob, &mut blob_size).is_ok() {
-                            if !p_blob.is_null() && blob_size > 0 {
-                                let slice = std::slice::from_raw_parts(p_blob, blob_size as usize);
-                                self.seq_header = Some(slice.to_vec());
-                                windows::Win32::System::Com::CoTaskMemFree(Some(p_blob as *const std::ffi::c_void));
-                            }
-                        }
-                    }
-                }
-
-                // Detect if the output is an HEVC IDR/CRA keyframe (NALU types 19, 20, 21)
-                let mut is_keyframe = false;
-                if out_data.len() > 5 && out_data[0] == 0 && out_data[1] == 0 {
-                    let nalu_type = if out_data[2] == 0 && out_data[3] == 1 {
-                        (out_data[4] & 0x7E) >> 1
-                    } else if out_data[2] == 1 {
-                        (out_data[3] & 0x7E) >> 1
-                    } else { 0 };
-                    
-                    if nalu_type == 19 || nalu_type == 20 || nalu_type == 21 || !self.sent_header {
-                        is_keyframe = true;
-                    }
-                } else if !self.sent_header {
-                    is_keyframe = true;
-                }
-
-                if is_keyframe {
-                    if let Some(header) = &self.seq_header {
-                        let mut full_frame = header.clone();
-                        full_frame.extend(&out_data);
-                        out_data = full_frame;
-                    }
-                }
-                self.sent_header = true;
-            }
+            // Output raw NVENC Annex-B stream directly.
+            // NVENC already embeds VPS/SPS/PPS inline at the start of every IDR frame.
+            // DO NOT prepend MF_MT_MPEG_SEQUENCE_HEADER — it's in HVCC format (no start codes)
+            // and mixing it with Annex-B corrupts the bitstream, causing blank screen on Android.
+            self.sent_header = true;
 
             Ok(out_data)
         }

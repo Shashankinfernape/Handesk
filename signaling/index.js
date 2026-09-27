@@ -18,37 +18,46 @@ const sessions = new Map();
 
 // --- UDP RELAY SERVER ---
 // Listens for UDP packets and routes them between Client and Host if P2P fails
-const udpRelay = dgram.createSocket('udp4');
+const udpRelay = dgram.createSocket({ type: 'udp6', ipv6Only: false });
+// map of endpoint "IP:PORT" -> { type: 'HOST'|'CLIENT', sessionId: '...' }
+const udpBindings = new Map();
 
 udpRelay.on('message', (msg, rinfo) => {
-    // Relay Packet Format: [SessionID: 16 bytes][Payload...]
-    if (msg.length < 16) return;
-    const sessionId = msg.toString('hex', 0, 16);
-    const session = sessions.get(sessionId);
-    if (!session) return;
-
     const senderKey = `${rinfo.address}:${rinfo.port}`;
-    const payload = msg.subarray(16);
-    const payloadStr = payload.toString('utf8');
     
-    // Auto-learn endpoints for the relay based on explicit punch packets
-    if (payloadStr.startsWith("PUNCH:HOST_SESSION")) {
-        session.hostUdp = rinfo;
-        console.log(`[RELAY] Bound Host UDP: ${senderKey}`);
-        return; // Don't route the punch packet itself
-    } else if (payloadStr.startsWith("PUNCH:ANDROID_SESSION")) {
-        session.clientUdp = rinfo;
-        console.log(`[RELAY] Bound Client UDP: ${senderKey}`);
+    // 1. Is this a BIND request? Format: BIND:<32-char-hex-session-id>:<HOST|CLIENT>
+    const msgStr = msg.toString('utf8');
+    if (msgStr.startsWith("BIND:")) {
+        const parts = msgStr.split(':');
+        if (parts.length === 3) {
+            const sessionId = parts[1];
+            const role = parts[2]; // 'HOST' or 'CLIENT'
+            
+            const session = sessions.get(sessionId);
+            if (session) {
+                udpBindings.set(senderKey, { type: role, sessionId });
+                if (role === 'HOST') session.hostUdp = rinfo;
+                if (role === 'CLIENT') session.clientUdp = rinfo;
+                console.log(`[RELAY] Bound ${role} UDP: ${senderKey} for session ${sessionId}`);
+                // Ack the bind
+                udpRelay.send("BIND_OK", rinfo.port, rinfo.address);
+            }
+        }
         return;
     }
 
-    // Route packet
-    if (session.hostUdp && senderKey === `${session.clientUdp?.address}:${session.clientUdp?.port}`) {
-        udpRelay.send(payload, session.hostUdp.port, session.hostUdp.address);
-        console.log(`[RELAY] Routed ${payload.length} bytes to HOST`);
-    } else if (session.clientUdp && senderKey === `${session.hostUdp?.address}:${session.hostUdp?.port}`) {
-        udpRelay.send(payload, session.clientUdp.port, session.clientUdp.address);
-        console.log(`[RELAY] Routed ${payload.length} bytes to CLIENT`);
+    // 2. Not a bind request, it's a raw video/input packet.
+    const binding = udpBindings.get(senderKey);
+    if (!binding) return; // Drop unauthenticated packets
+
+    const session = sessions.get(binding.sessionId);
+    if (!session) return; // Session ended
+
+    // Route packet natively!
+    if (binding.type === 'HOST' && session.clientUdp) {
+        udpRelay.send(msg, session.clientUdp.port, session.clientUdp.address);
+    } else if (binding.type === 'CLIENT' && session.hostUdp) {
+        udpRelay.send(msg, session.hostUdp.port, session.hostUdp.address);
     }
 });
 
@@ -164,7 +173,7 @@ wss.on('connection', (ws, req) => {
 
             // 3. CANDIDATE EXCHANGE (ICE)
             case 'CANDIDATE': {
-                const { sessionId, candidate, isHost } = msg;
+                const { sessionId, candidate, isHost, serverReflexiveIp } = msg;
                 const session = sessions.get(sessionId);
                 if (!session) return;
 
@@ -174,8 +183,8 @@ wss.on('connection', (ws, req) => {
                         type: 'CANDIDATE',
                         sessionId,
                         candidate,
-                        // Inject server-reflexive IP (STUN equivalent)
-                        serverReflexiveIp: clientIp
+                        // Pass along the STUN IP if provided, otherwise inject websocket IP
+                        serverReflexiveIp: serverReflexiveIp || clientIp
                     }));
                 }
                 break;
