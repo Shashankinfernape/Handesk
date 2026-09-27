@@ -122,6 +122,12 @@ impl MFEncoder {
                 // Force H.264 Baseline Profile (66) so Android tablets can decode it without crashing!
                 let var_profile = windows::core::VARIANT::from(1u32);
                 let _ = unsafe { codec_api.SetValue(&windows::Win32::Media::MediaFoundation::CODECAPI_AVEncMPVProfile, &var_profile) };
+
+                // Force Constant Bitrate (CBR) at 4Mbps to prevent massive IDR frame spikes
+                let var_cbr = windows::core::VARIANT::from(2u32); // eAVEncCommonRateControlMode_CBR
+                let _ = unsafe { codec_api.SetValue(&windows::Win32::Media::MediaFoundation::CODECAPI_AVEncCommonRateControlMode, &var_cbr) };
+                let var_bitrate = windows::core::VARIANT::from(4_000_000u32);
+                let _ = unsafe { codec_api.SetValue(&windows::Win32::Media::MediaFoundation::CODECAPI_AVEncCommonMeanBitRate, &var_bitrate) };
             }
 
             // 2. Set Input Type (NV12)
