@@ -10,19 +10,18 @@ pub async fn start_audio_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
     let host = cpal::default_host();
     let device = host.default_output_device().context("No output device available")?;
     
-    // removed log
-    
-    let config = device.supported_output_configs()?
-        .next()
-        .context("No supported config")?
-        .with_max_sample_rate();
+    // Use the device's DEFAULT config (the actual Windows mixer format — almost always 48000 Hz stereo).
+    // Do NOT use supported_output_configs().next().with_max_sample_rate() — that can return
+    // 192000 Hz which causes a complete sample-rate mismatch with the Android AudioTrack at 48000 Hz.
+    let config = device.default_output_config().context("No default output config")?;
         
     let sample_format = config.sample_format();
-    let stream_config: cpal::StreamConfig = config.clone().into();
+    let stream_config: cpal::StreamConfig = config.into();
     
-    info!("Audio Stream Config: {:?}", stream_config);
+    info!("Audio loopback: format={:?} rate={:?}Hz channels={}", 
+        sample_format, stream_config.sample_rate, stream_config.channels);
     
-    let err_fn = |err| error!("An error occurred on the audio stream: {}", err);
+    let err_fn = |err| error!("Audio stream error: {}", err);
     
     let stream = match sample_format {
         cpal::SampleFormat::F32 => {
