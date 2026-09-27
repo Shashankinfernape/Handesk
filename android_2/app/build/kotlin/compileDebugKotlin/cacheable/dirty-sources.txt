@@ -1,0 +1,8 @@
+C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\java\com\directlink\client\MainActivity.kt
+C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\java\com\directlink\client\StunClient.kt
+C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\java\com\directlink\client\NetworkClient.kt
+C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\java\com\directlink\client\VideoDecoder.kt
+C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\java\com\directlink\client\DebugStats.kt
+C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\java\com\directlink\client\NativeClient.kt
+C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\java\com\directlink\client\DirectTouchHandler.kt
+C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\java\com\directlink\client\SignalingClient.kt

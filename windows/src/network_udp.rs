@@ -22,6 +22,7 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
 
     let mut buf = vec![0u8; 2048];
     let mut current_capture_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut current_audio_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut current_client: Option<SocketAddr> = None;
 
     loop {
@@ -82,7 +83,47 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
                 });
                 current_capture_task = Some(capture_handle);
 
-                // Spawn the sender loop for THIS specific client
+                if let Some(task) = current_audio_task.take() {
+                    task.abort();
+                }
+                
+                let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<u8>>(50);
+                let audio_handle = tokio::spawn(async move {
+                    if let Err(e) = crate::audio::start_audio_loop(audio_tx).await {
+                        error!("Audio loop failed: {:?}", e);
+                    }
+                });
+                current_audio_task = Some(audio_handle);
+
+                // Spawn the AUDIO sender loop
+                let socket_audio = socket.clone();
+                tokio::spawn(async move {
+                    let mut audio_sequence: u32 = 0;
+                    while let Some(pcm) = audio_rx.recv().await {
+                        audio_sequence = audio_sequence.wrapping_add(1);
+                        
+                        // We assume audio chunks are small enough to fit in one UDP packet (< 1400 bytes)
+                        // cpal usually gives ~10ms chunks (480 samples * 4 bytes = 1920 bytes)
+                        // Actually, 1920 might exceed MTU (1500). Let's chunk the audio just in case.
+                        let audio_mtu = 1200;
+                        let total_chunks = ((pcm.len() + audio_mtu - 1) / audio_mtu) as u16;
+                        
+                        for (chunk_index, chunk) in pcm.chunks(audio_mtu).enumerate() {
+                            let mut frame = BytesMut::with_capacity(15 + chunk.len());
+                            frame.extend_from_slice(&MAGIC_BYTES);
+                            frame.put_u8(0x08); // PACKET_AUDIO
+                            frame.put_u32_le(audio_sequence);
+                            frame.put_u16_le(chunk_index as u16);
+                            frame.put_u16_le(total_chunks);
+                            frame.put_u16_le(chunk.len() as u16);
+                            frame.extend_from_slice(chunk);
+                            
+                            let _ = socket_audio.send_to(&frame, remote_addr).await;
+                        }
+                    }
+                });
+
+                // Spawn the VIDEO sender loop for THIS specific client
                 let socket_clone = socket.clone();
                 tokio::spawn(async move {
                     let mut sequence: u32 = 0;

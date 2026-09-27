@@ -21,6 +21,10 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.DesktopAccessDisabled
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -254,16 +258,52 @@ fun RemoteSessionScreen(
             }
         )
         
-        // --- QUALITY SETTINGS GEAR ---
+        // --- AUDIO AND QUALITY SETTINGS ---
         var expanded by remember { mutableStateOf(false) }
         var currentQuality by remember { mutableStateOf("Auto") }
         
+        var isMobileAudioOn by remember { mutableStateOf(true) }
+        var isPcAudioOn by remember { mutableStateOf(true) }
+        
         Box(modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)) {
-            IconButton(
-                onClick = { expanded = true },
-                modifier = Modifier.background(Color(0x88000000), CircleShape)
-            ) {
-                Icon(Icons.Filled.Settings, contentDescription = "Quality Settings", tint = Color.White)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                // PC Audio Toggle
+                IconButton(
+                    onClick = { 
+                        isPcAudioOn = !isPcAudioOn
+                        // networkClient.sendPcAudioToggle(isPcAudioOn)
+                    },
+                    modifier = Modifier.background(if (isPcAudioOn) Color(0x88000000) else Color(0x88FF3B30), CircleShape)
+                ) {
+                    Icon(
+                        if (isPcAudioOn) androidx.compose.material.icons.filled.Computer else androidx.compose.material.icons.filled.DesktopAccessDisabled, 
+                        contentDescription = "PC Audio Toggle", 
+                        tint = Color.White
+                    )
+                }
+
+                // Mobile Audio Toggle
+                IconButton(
+                    onClick = { 
+                        isMobileAudioOn = !isMobileAudioOn
+                        // networkClient.setMobileAudio(isMobileAudioOn)
+                    },
+                    modifier = Modifier.background(if (isMobileAudioOn) Color(0x88000000) else Color(0x88FF3B30), CircleShape)
+                ) {
+                    Icon(
+                        if (isMobileAudioOn) androidx.compose.material.icons.filled.VolumeUp else androidx.compose.material.icons.filled.VolumeOff, 
+                        contentDescription = "Mobile Audio Toggle", 
+                        tint = Color.White
+                    )
+                }
+
+                // Settings Gear
+                IconButton(
+                    onClick = { expanded = true },
+                    modifier = Modifier.background(Color(0x88000000), CircleShape)
+                ) {
+                    Icon(Icons.Filled.Settings, contentDescription = "Quality Settings", tint = Color.White)
+                }
             }
             DropdownMenu(
                 expanded = expanded,

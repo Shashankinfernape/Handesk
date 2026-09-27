@@ -9,6 +9,7 @@ mod transport;
 mod input;
 mod network_udp;
 mod network_tcp;
+mod audio;
 
 #[tokio::main]
 async fn main() -> Result<()> {
