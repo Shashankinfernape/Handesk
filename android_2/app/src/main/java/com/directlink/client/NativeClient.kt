@@ -42,7 +42,7 @@ class NativeClient {
         sendInputNative(fullPacket)
     }
 
-    fun sendMouseEvent(normX: Int, normY: Int) {
+    fun sendMouseMove(normX: Int, normY: Int) {
         val payload = ByteArray(5)
         payload[0] = 0x01
         payload[1] = (normX ushr 8).toByte()
@@ -60,7 +60,7 @@ class NativeClient {
         sendInputPacket(payload)
     }
 
-    fun sendScrollEvent(delta: Int) {
+    fun sendMouseScroll(delta: Int) {
         val payload = ByteArray(3)
         payload[0] = 0x03
         payload[1] = (delta ushr 8).toByte()
