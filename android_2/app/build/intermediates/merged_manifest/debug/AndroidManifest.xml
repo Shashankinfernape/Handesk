@@ -27,6 +27,7 @@
         android:label="DirectLink"
         android:supportsRtl="true"
         android:testOnly="true"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
         android:usesCleartextTraffic="true" >
         <activity
             android:name="com.directlink.client.MainActivity"

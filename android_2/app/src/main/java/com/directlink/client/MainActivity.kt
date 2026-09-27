@@ -234,7 +234,7 @@ fun RemoteSessionScreen(
         AndroidView(
             modifier = Modifier
                 .fillMaxSize()
-                .wrapContentSize(Alignment.Center)
+                .wrapContentSize(Alignment.BottomCenter)
                 .aspectRatio(16f / 9f),
             factory = { ctx ->
                 val surface = SurfaceView(ctx)
