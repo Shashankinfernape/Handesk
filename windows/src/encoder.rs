@@ -101,7 +101,7 @@ impl MFEncoder {
             let out_type: IMFMediaType = MFCreateMediaType().context("MFCreateMediaType failed")?;
             out_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
             out_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_HEVC)?; // QUICK WIN: H.265 / HEVC
-            out_type.SetUINT32(&MF_MT_AVG_BITRATE, 2_000_000)?; // 2Mbps HEVC = 250 KB/s, perfectly safe for Tailscale UDP
+            out_type.SetUINT32(&MF_MT_AVG_BITRATE, 8_000_000)?; // 8Mbps HEVC for FLAWLESS TCP QUALITY
             
             // CRITICAL GLITCH FIX: Android tablets cannot hardware decode 144fps HEVC.
             // When we blast 144fps, the Android decoder queue overflows and drops P-frames.
@@ -128,10 +128,10 @@ impl MFEncoder {
                 let var_profile = windows::core::VARIANT::from(1u32);
                 let _ = unsafe { codec_api.SetValue(&windows::Win32::Media::MediaFoundation::CODECAPI_AVEncMPVProfile, &var_profile) };
 
-                // Force Constant Bitrate (CBR) at 2Mbps to prevent massive IDR frame spikes
+                // Force Constant Bitrate (CBR) at 8Mbps
                 let var_cbr = windows::core::VARIANT::from(2u32); // eAVEncCommonRateControlMode_CBR
                 let _ = unsafe { codec_api.SetValue(&windows::Win32::Media::MediaFoundation::CODECAPI_AVEncCommonRateControlMode, &var_cbr) };
-                let var_bitrate = windows::core::VARIANT::from(2_000_000u32);
+                let var_bitrate = windows::core::VARIANT::from(8_000_000u32);
                 let _ = unsafe { codec_api.SetValue(&windows::Win32::Media::MediaFoundation::CODECAPI_AVEncCommonMeanBitRate, &var_bitrate) };
             }
 

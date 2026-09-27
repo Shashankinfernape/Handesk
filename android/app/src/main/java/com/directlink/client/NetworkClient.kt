@@ -29,6 +29,99 @@ class NetworkClient {
     // Also track arrival time to evict stale incomplete frames
     private val frameBuffers = mutableMapOf<Int, Triple<Int, MutableMap<Int, ByteArray>, Long>>()
 
+    var tcpSocket: java.net.Socket? = null
+    private var hasReceivedIDR = false
+
+    suspend fun connectToHostTcp(ip: String): String? = withContext(Dispatchers.IO) {
+        try {
+            val host = if (ip.contains(":")) ip.substringBefore(":") else ip
+            println("DirectLink: Connecting TCP FLAWLESS MODE to $host:21118")
+            
+            tcpSocket = java.net.Socket()
+            tcpSocket?.tcpNoDelay = true
+            tcpSocket?.connect(InetSocketAddress(host, 21118), 3000)
+            
+            val input = tcpSocket!!.getInputStream()
+            val output = tcpSocket!!.getOutputStream()
+            
+            inputPacketSender = { packet ->
+                try {
+                    // Send directly over TCP. We don't even need length headers for input 
+                    // since our Windows reader is just reading chunks and passing to input handler!
+                    // Wait, Windows expects UDP, so it reads packet by packet.
+                    // For TCP, we can just write the 15-byte packet directly!
+                    output.write(packet)
+                    output.flush()
+                } catch(e: Exception){}
+            }
+            
+            // We are connected! Start reading frames directly from TCP (no chunking, no drops!)
+            decoderJob?.cancel()
+            decoderJob = launch(Dispatchers.Default) {
+                for (frameData in decoderChannel) {
+                    try {
+                        videoFrameCallback?.invoke(frameData)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+            }
+
+            listenerJob?.cancel()
+            listenerJob = launch(Dispatchers.IO) {
+                try {
+                    while (isActive) {
+                        // Read 4-byte length
+                        val lenBytes = ByteArray(4)
+                        var read = 0
+                        while (read < 4) {
+                            val r = input.read(lenBytes, read, 4 - read)
+                            if (r == -1) throw Exception("TCP Disconnected")
+                            read += r
+                        }
+                        
+                        val len = (lenBytes[0].toInt() and 0xFF) or
+                                  ((lenBytes[1].toInt() and 0xFF) shl 8) or
+                                  ((lenBytes[2].toInt() and 0xFF) shl 16) or
+                                  ((lenBytes[3].toInt() and 0xFF) shl 24)
+                                  
+                        if (len > 5 * 1024 * 1024) throw Exception("Frame too large: $len") // Sanity check
+
+                        val frameData = ByteArray(len)
+                        read = 0
+                        while (read < len) {
+                            val r = input.read(frameData, read, len - read)
+                            if (r == -1) throw Exception("TCP Disconnected")
+                            read += r
+                        }
+                        
+                        // IDR check so we don't start on a P-frame
+                        if (!hasReceivedIDR) {
+                            var isKeyFrame = false
+                            // Simplistic IDR check for H.265 (NAL type 19, 20, 32)
+                            if (frameData.size > 5) {
+                                val naluType = (frameData[4].toInt() and 0x7E) shr 1
+                                if (naluType == 19 || naluType == 20 || naluType == 32) isKeyFrame = true
+                            }
+                            if (!isKeyFrame) continue
+                            hasReceivedIDR = true
+                        }
+                        
+                        DebugStats.framesReceived++
+                        DebugStats.framesCompleted++
+                        decoderChannel.trySend(frameData)
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+            null // Success
+        } catch (e: Exception) {
+            e.printStackTrace()
+            e.message ?: "TCP Connect Error"
+        }
+    }
+
     suspend fun connectToHost(localIp: String, publicAddr: String = ""): String? = withContext(Dispatchers.IO) {
         try {
             if (socket == null || socket?.isClosed == true) {

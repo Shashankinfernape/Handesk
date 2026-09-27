@@ -8,12 +8,12 @@ mod signaling;
 mod transport;
 mod input;
 mod network_udp;
+mod network_tcp;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // QUICK WIN: Boost Windows process priority to REALTIME so background OS tasks never stall the UDP stream
     unsafe {
-        windows::Win32::System::Threading::SetPriorityClass(
+        let _ = windows::Win32::System::Threading::SetPriorityClass(
             windows::Win32::System::Threading::GetCurrentProcess(),
             windows::Win32::System::Threading::REALTIME_PRIORITY_CLASS
         );
@@ -21,14 +21,11 @@ async fn main() -> Result<()> {
     }
 
     tracing_subscriber::fmt::init();
-    info!("Starting DirectLink Host (Direct IP Server Mode)...");
+    info!("Starting DirectLink Host (FLAWLESS TCP MODE)...");
 
-    let socket = std::sync::Arc::new(tokio::net::UdpSocket::bind("0.0.0.0:21118").await?);
-    if let Err(e) = network_udp::start_direct_server(socket).await {
+    if let Err(e) = network_tcp::start_tcp_server().await {
         error!("Server crashed: {:?}", e);
     }
 
     Ok(())
 }
-
-

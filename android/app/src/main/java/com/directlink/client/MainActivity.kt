@@ -155,7 +155,7 @@ fun HomeScreen(
                             prefs.edit().putString("last_ip", hostIp).apply()
                             coroutineScope.launch {
                                 isConnecting = true
-                                val err = networkClient.connectToHost(hostIp)
+                                val err = networkClient.connectToHostTcp(hostIp) // FLAWLESS TCP MODE
                                 isConnecting = false
                                 if (err == null) onConnected()
                                 else errorMsg = err
