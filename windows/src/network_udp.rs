@@ -47,9 +47,18 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
                 if current_client == Some(remote_addr) {
                     continue;
                 }
-                
+
+                // Auto-detect Tailscale connection (100.x.x.x IP range)
+                let is_tailscale = matches!(remote_addr.ip(), std::net::IpAddr::V4(ip) if ip.octets()[0] == 100);
+                let pace_us: u128 = if is_tailscale { 2000 } else { 300 };
+
                 info!("========================================");
                 info!(" CLIENT CONNECTED: {:?}", remote_addr);
+                if is_tailscale {
+                    info!(" Mode: TAILSCALE (Internet) — 2000us conservative pacing");
+                } else {
+                    info!(" Mode: LOCAL Wi-Fi — 300us fast pacing");
+                }
                 info!(" Initiating Direct P2P Video Stream!");
                 info!("========================================");
                 
@@ -95,10 +104,12 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
                                 error!("Failed to send UDP chunk: {}", e);
                             }
                             
-                            // Micro-pacing: Prevent router/UDP buffer overflow during fast-moving (large) video frames.
-                            // Unlike sleep(), yield_now() avoids the toxic 15.6ms Windows OS Timer penalty, 
-                            // creating a microsecond-scale delay that perfectly spaces out packets for Wi-Fi.
-
+                            // Adaptive pacing: 300us for local Wi-Fi, 2000us for Tailscale internet tunnel
+                            let spin_start = std::time::Instant::now();
+                            while spin_start.elapsed().as_micros() < pace_us {
+                                std::hint::spin_loop();
+                            }
+                            tokio::task::yield_now().await;
                         }
                     }
                 });

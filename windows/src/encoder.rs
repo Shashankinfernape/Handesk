@@ -160,7 +160,7 @@ impl MFEncoder {
                 input_samples.push((input_sample, input_mf_buffer));
             }
 
-            info!("MF H.264 Encoder initialized: {}x{} @ 60fps, 5Mbps (Paced UDP Mode)", width, height);
+            info!("MF HEVC/H.265 Encoder initialized: {}x{} @ 144fps, 25Mbps (NVENC Paced UDP Mode)", width, height);
 
             Ok(Self {
                 width,
