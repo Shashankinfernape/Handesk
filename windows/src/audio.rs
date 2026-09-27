@@ -19,10 +19,6 @@ pub async fn start_audio_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
         
     let sample_format = config.sample_format();
     let stream_config: cpal::StreamConfig = config.clone().into();
-    println!("=========================================");
-    println!("CPAL AUDIO FORMAT DETECTED: {:?}", sample_format);
-    println!("CPAL STREAM CONFIG: {:?}", stream_config);
-    println!("=========================================");
     
     info!("Audio Stream Config: {:?}", stream_config);
     
@@ -45,7 +41,6 @@ pub async fn start_audio_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
                     
                     // non-blocking try_send, drop chunk if channel is full
                     let _ = tx.try_send(pcm16);
-                    if data.iter().any(|&x| x > 0.01) { println!("RUST IS RECEIVING LOUD AUDIO FROM CPAL!"); }
                 },
                 err_fn,
                 None
@@ -63,7 +58,6 @@ pub async fn start_audio_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
                     }
                     
                     let _ = tx.try_send(pcm16);
-                    if data.iter().any(|&x| x > 100 || x < -100) { println!("RUST IS RECEIVING LOUD AUDIO FROM CPAL! (I16)"); }
                 },
                 err_fn,
                 None

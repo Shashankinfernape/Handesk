@@ -121,13 +121,12 @@ void network_loop(std::string ip) {
         if (buf[0] != 'D' || buf[1] != 'L' || buf[2] != 'P' || buf[3] != '1') continue;
 
         if (buf[4] == 0x08) {
-            uint16_t chunk_len = (buf[14] << 8) | buf[13];
-            if (15 + chunk_len > len) continue;
+            uint16_t chunk_len = (uint16_t)buf[13] | ((uint16_t)buf[14] << 8);
+            if (chunk_len == 0 || (size_t)(15 + chunk_len) > (size_t)len) continue;
             if (attached && g_obj && g_onAudioData_method) {
                 jbyteArray j_pcm = env->NewByteArray(chunk_len);
                 env->SetByteArrayRegion(j_pcm, 0, chunk_len, (jbyte*)(buf + 15));
                 env->CallVoidMethod(g_obj, g_onAudioData_method, j_pcm);
-                  static int audio_recv_count = 0; if (audio_recv_count++ % 50 == 0) { LOGI("C++ JNI: Received and pushed 50 audio frames to Kotlin!"); }
                 env->DeleteLocalRef(j_pcm);
             }
             continue;
