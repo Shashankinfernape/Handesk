@@ -21,10 +21,8 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Computer
-import androidx.compose.material.icons.filled.DesktopAccessDisabled
-import androidx.compose.material.icons.filled.VolumeUp
-import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -276,7 +274,7 @@ fun RemoteSessionScreen(
                     modifier = Modifier.background(if (isPcAudioOn) Color(0x88000000) else Color(0x88FF3B30), CircleShape)
                 ) {
                     Icon(
-                        if (isPcAudioOn) androidx.compose.material.icons.filled.Computer else androidx.compose.material.icons.filled.DesktopAccessDisabled, 
+                        androidx.compose.material.icons.filled.Home, 
                         contentDescription = "PC Audio Toggle", 
                         tint = Color.White
                     )
@@ -291,7 +289,7 @@ fun RemoteSessionScreen(
                     modifier = Modifier.background(if (isMobileAudioOn) Color(0x88000000) else Color(0x88FF3B30), CircleShape)
                 ) {
                     Icon(
-                        if (isMobileAudioOn) androidx.compose.material.icons.filled.VolumeUp else androidx.compose.material.icons.filled.VolumeOff, 
+                        androidx.compose.material.icons.filled.Phone, 
                         contentDescription = "Mobile Audio Toggle", 
                         tint = Color.White
                     )
