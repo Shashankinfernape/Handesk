@@ -1,0 +1,9 @@
+[package]
+name = "cpal_test"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+cpal = "0.18.2"
+tracing = "0.1.44"
