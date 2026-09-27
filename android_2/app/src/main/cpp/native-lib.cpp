@@ -127,6 +127,7 @@ void network_loop(std::string ip) {
                 jbyteArray j_pcm = env->NewByteArray(chunk_len);
                 env->SetByteArrayRegion(j_pcm, 0, chunk_len, (jbyte*)(buf + 15));
                 env->CallVoidMethod(g_obj, g_onAudioData_method, j_pcm);
+                  static int audio_recv_count = 0; if (audio_recv_count++ % 50 == 0) { LOGI("C++ JNI: Received and pushed 50 audio frames to Kotlin!"); }
                 env->DeleteLocalRef(j_pcm);
             }
             continue;

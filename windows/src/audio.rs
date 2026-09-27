@@ -18,7 +18,11 @@ pub async fn start_audio_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
         .with_max_sample_rate();
         
     let sample_format = config.sample_format();
-    let stream_config: cpal::StreamConfig = config.into();
+    let stream_config: cpal::StreamConfig = config.clone().into();
+    println!("=========================================");
+    println!("CPAL AUDIO FORMAT DETECTED: {:?}", sample_format);
+    println!("CPAL STREAM CONFIG: {:?}", stream_config);
+    println!("=========================================");
     
     info!("Audio Stream Config: {:?}", stream_config);
     

@@ -28,6 +28,7 @@ class NativeClient {
 
     // Called from C++ JNI when an 0x08 packet arrives
     fun onAudioData(pcmData: ByteArray) {
+        if (audioTrack.playState != AudioTrack.PLAYSTATE_PLAYING) { audioTrack.play(); android.util.Log.d("NativeClient", "Forced AudioTrack to PLAY!"); }
         audioTrack.write(pcmData, 0, pcmData.size)
     }
 

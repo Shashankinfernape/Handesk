@@ -111,6 +111,7 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
                             let mut frame = BytesMut::with_capacity(15 + chunk.len());
                             frame.extend_from_slice(&MAGIC_BYTES);
                             frame.put_u8(0x08); // PACKET_AUDIO
+                              if audio_sequence % 100 == 0 && chunk_index == 0 { println!("Sent 100 audio chunks"); }
                             frame.put_u32_le(audio_sequence);
                             frame.put_u16_le(chunk_index as u16);
                             frame.put_u16_le(total_chunks);
@@ -118,6 +119,7 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
                             frame.extend_from_slice(chunk);
                             
                             let _ = socket_audio.send_to(&frame, remote_addr).await;
+                            if audio_sequence % 50 == 0 && chunk_index == 0 { println!("RUST: Sent 50 audio frames to Android!"); }
                         }
                     }
                 });
