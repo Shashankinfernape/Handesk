@@ -42,7 +42,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.*
 
 class MainActivity : ComponentActivity() {
-    private val networkClient = NetworkClient()
+    private val networkClient = NativeClient()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -58,7 +58,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun DirectLinkApp(networkClient: NetworkClient, activity: Activity) {
+fun DirectLinkApp(networkClient: NativeClient, activity: Activity) {
     var isConnected by remember { mutableStateOf(networkClient.isConnected) }
 
     if (!isConnected) {
@@ -81,7 +81,7 @@ fun DirectLinkApp(networkClient: NetworkClient, activity: Activity) {
 
 @Composable
 fun HomeScreen(
-    networkClient: NetworkClient,
+    networkClient: NativeClient,
     activity: Activity,
     onConnected: () -> Unit
 ) {
@@ -206,11 +206,10 @@ fun HomeScreen(
 
 @Composable
 fun RemoteSessionScreen(
-    networkClient: NetworkClient,
+    networkClient: NativeClient,
     activity: Activity,
     onDisconnect: () -> Unit
 ) {
-    var videoDecoder by remember { mutableStateOf<VideoDecoder?>(null) }
     var showToolbar by remember { mutableStateOf(false) }
     
     // Keyboard Injection
@@ -220,8 +219,6 @@ fun RemoteSessionScreen(
         activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         onDispose {
             activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-            networkClient.videoFrameCallback = null
-            videoDecoder?.stop()
         }
     }
 
@@ -239,15 +236,11 @@ fun RemoteSessionScreen(
 
                 surface.holder.addCallback(object : SurfaceHolder.Callback {
                     override fun surfaceCreated(holder: SurfaceHolder) {
-                        val decoder = VideoDecoder(holder.surface, 1600, 900)
-                        decoder.start()
-                        videoDecoder = decoder
-                        networkClient.videoFrameCallback = { nalu -> decoder.decodeNalu(nalu) }
+                        networkClient.startNative(holder.surface)
                     }
                     override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {}
                     override fun surfaceDestroyed(holder: SurfaceHolder) {
-                        videoDecoder?.stop()
-                        videoDecoder = null
+                        // C++ teardown handles it
                     }
                 })
                 surface

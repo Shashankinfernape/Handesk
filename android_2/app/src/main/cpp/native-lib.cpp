@@ -82,21 +82,22 @@ void decode_nalu(const std::vector<uint8_t>& data) {
     }
 }
 
+struct sockaddr_in target_addr_global;
+
 void network_loop(std::string ip) {
     LOGI("Network loop started for %s", ip.c_str());
     
     udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_socket < 0) return;
 
-    struct sockaddr_in target_addr;
-    memset(&target_addr, 0, sizeof(target_addr));
-    target_addr.sin_family = AF_INET;
-    target_addr.sin_port = htons(21118);
-    inet_pton(AF_INET, ip.c_str(), &target_addr.sin_addr);
+    memset(&target_addr_global, 0, sizeof(target_addr_global));
+    target_addr_global.sin_family = AF_INET;
+    target_addr_global.sin_port = htons(21118);
+    inet_pton(AF_INET, ip.c_str(), &target_addr_global.sin_addr);
 
     // Send HELLO packet
     uint8_t hello_packet[] = {'D', 'L', 'P', '1', 0x01};
-    sendto(udp_socket, hello_packet, sizeof(hello_packet), 0, (struct sockaddr*)&target_addr, sizeof(target_addr));
+    sendto(udp_socket, hello_packet, sizeof(hello_packet), 0, (struct sockaddr*)&target_addr_global, sizeof(target_addr_global));
 
     std::map<uint32_t, FrameBuffer> frame_buffers;
     uint8_t buf[2048];
@@ -198,5 +199,20 @@ Java_com_directlink_client_NativeClient_disconnectNative(JNIEnv* env, jobject th
     if (window) {
         ANativeWindow_release(window);
         window = nullptr;
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_directlink_client_NativeClient_sendInputNative(JNIEnv* env, jobject thiz, jbyteArray packet) {
+    if (udp_socket < 0 || !is_running) return;
+    
+    jsize len = env->GetArrayLength(packet);
+    if (len <= 0) return;
+    
+    jbyte* buffer_ptr = env->GetByteArrayElements(packet, nullptr);
+    if (buffer_ptr) {
+        extern struct sockaddr_in target_addr_global;
+        sendto(udp_socket, buffer_ptr, len, 0, (struct sockaddr*)&target_addr_global, sizeof(target_addr_global));
+        env->ReleaseByteArrayElements(packet, buffer_ptr, JNI_ABORT);
     }
 }
