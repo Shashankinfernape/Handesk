@@ -58,7 +58,7 @@ class NetworkClient {
             
             // We are connected! Start reading frames directly from TCP (no chunking, no drops!)
             decoderJob?.cancel()
-            decoderJob = launch(Dispatchers.Default) {
+            decoderJob = scope.launch(Dispatchers.Default) {
                 for (frameData in decoderChannel) {
                     try {
                         videoFrameCallback?.invoke(frameData)
@@ -69,7 +69,7 @@ class NetworkClient {
             }
 
             listenerJob?.cancel()
-            listenerJob = launch(Dispatchers.IO) {
+            listenerJob = scope.launch(Dispatchers.IO) {
                 try {
                     while (isActive) {
                         // Read 4-byte length
