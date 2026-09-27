@@ -112,7 +112,7 @@ class DirectTouchHandler(private val networkClient: NativeClient, private val vi
                 startY = event.y
                 isLongPressCanceled = false
                 handler.removeCallbacks(longPressRunnable)
-                handler.postDelayed(longPressRunnable, 1000)
+                handler.postDelayed(longPressRunnable, 400)
             }
             
             MotionEvent.ACTION_POINTER_DOWN -> {
@@ -129,8 +129,8 @@ class DirectTouchHandler(private val networkClient: NativeClient, private val vi
             
             MotionEvent.ACTION_MOVE -> {
                 if (event.pointerCount == 1) {
-                    // Cancel long press if they move their finger more than 15 pixels before the 1 second is up
-                    if (!isLongPressCanceled && (Math.abs(event.x - startX) > 15f || Math.abs(event.y - startY) > 15f)) {
+                    // Cancel long press if they move their finger more than 45 pixels before the 400ms is up
+                    if (!isLongPressCanceled && (Math.abs(event.x - startX) > 45f || Math.abs(event.y - startY) > 45f)) {
                         isLongPressCanceled = true
                         handler.removeCallbacks(longPressRunnable)
                     }

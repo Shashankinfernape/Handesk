@@ -169,8 +169,8 @@ Java_com_directlink_client_NativeClient_connectNative(JNIEnv* env, jobject thiz,
     decoder = AMediaCodec_createDecoderByType("video/hevc");
     AMediaFormat* format = AMediaFormat_new();
     AMediaFormat_setString(format, AMEDIAFORMAT_KEY_MIME, "video/hevc");
-    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, 1920);
-    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_HEIGHT, 1080);
+    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, 1600);
+    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_HEIGHT, 900);
     
     // Low latency mode
     AMediaFormat_setInt32(format, "low-latency", 1);
