@@ -238,12 +238,12 @@ class NetworkClient {
                         // ASSEMBLE STALE FRAME EXACTLY AT OFFSETS
                         var maxOffset = 0
                         for ((idx, chunk) in entry.second) {
-                            maxOffset = maxOf(maxOffset, (idx * 1200) + chunk.size)
+                            maxOffset = maxOf(maxOffset, (idx * 1024) + chunk.size)
                         }
                         if (maxOffset > 0) {
                             val frameData = ByteArray(maxOffset)
                             for ((idx, chunk) in entry.second) {
-                                System.arraycopy(chunk, 0, frameData, idx * 1200, chunk.size)
+                                System.arraycopy(chunk, 0, frameData, idx * 1024, chunk.size)
                             }
                             decoderChannel.trySend(frameData)
                         }
@@ -258,11 +258,11 @@ class NetworkClient {
                         // All chunks received — assemble exactly
                         var maxOffset = 0
                         for ((idx, chunk) in frameEntry.second) {
-                            maxOffset = maxOf(maxOffset, (idx * 1200) + chunk.size)
+                            maxOffset = maxOf(maxOffset, (idx * 1024) + chunk.size)
                         }
                         val frameData = ByteArray(maxOffset)
                         for ((idx, chunk) in frameEntry.second) {
-                            System.arraycopy(chunk, 0, frameData, idx * 1200, chunk.size)
+                            System.arraycopy(chunk, 0, frameData, idx * 1024, chunk.size)
                         }
 
                         val oldKeys = frameBuffers.keys.filter { it <= frameId }

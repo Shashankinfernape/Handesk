@@ -120,8 +120,8 @@ impl MFEncoder {
                 let var_zero = windows::core::VARIANT::from(0u32);
                 let _ = unsafe { codec_api.SetValue(&windows::Win32::Media::MediaFoundation::CODECAPI_AVEncMPVDefaultBPictureCount, &var_zero) };
 
-                // Force an IDR Keyframe every 30 frames (1 second at 30fps) to instantly recover from any stream corruption
-                let var_gop = windows::core::VARIANT::from(30u32);
+                // Force an IDR Keyframe every 15 frames (4 times a second at 60fps) to instantly recover from UDP stream corruption (stuck pixels)
+                let var_gop = windows::core::VARIANT::from(15u32);
                 let _ = unsafe { codec_api.SetValue(&windows::Win32::Media::MediaFoundation::CODECAPI_AVEncMPVGOPSize, &var_gop) };
 
                 // Force H.264 Baseline Profile (66) so Android tablets can decode it without crashing!

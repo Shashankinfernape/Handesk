@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tracing::{info, error};
 
 pub const MAGIC_BYTES: [u8; 4] = [b'D', b'L', b'P', b'1'];
-const MAX_UDP_PAYLOAD: usize = 1200; // Safe below MTU 1500
+const MAX_UDP_PAYLOAD: usize = 1024; // 1024 perfectly fits inside Tailscale Wireguard's 1280 MTU
 
 // Packet Types
 const PACKET_HELLO: u8 = 0x01;
@@ -50,12 +50,12 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
 
                 // Auto-detect Tailscale connection (100.x.x.x IP range)
                 let is_tailscale = matches!(remote_addr.ip(), std::net::IpAddr::V4(ip) if ip.octets()[0] == 100);
-                let pace_us: u128 = if is_tailscale { 1500 } else { 300 };
+                let pace_us: u128 = if is_tailscale { 2500 } else { 300 };
 
                 info!("========================================");
                 info!(" CLIENT CONNECTED: {:?}", remote_addr);
                 if is_tailscale {
-                    info!(" Mode: TAILSCALE (Internet) — 1500us pacing (6.4Mbps bandwidth)");
+                    info!(" Mode: TAILSCALE (Internet) — 2500us pacing (3.2Mbps bandwidth)");
                 } else {
                     info!(" Mode: LOCAL Wi-Fi — 300us fast pacing");
                 }
