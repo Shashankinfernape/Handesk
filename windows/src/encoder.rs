@@ -249,16 +249,17 @@ impl MFEncoder {
 
             Ok(out_data)
         }
-        pub fn set_bitrate(&self, bitrate: u32) {
+    }
+
+    pub fn set_bitrate(&self, bitrate: u32) {
         unsafe {
-            let codec_api: windows::core::Result<windows::Win32::Media::MediaFoundation::IMFCodecAPI> = self.transform.cast();
+            let codec_api: windows::core::Result<windows::Win32::Media::MediaFoundation::ICodecAPI> = self.transform.cast();
             if let Ok(api) = codec_api {
                 let var_bitrate = windows::core::VARIANT::from(bitrate);
                 let _ = api.SetValue(&windows::Win32::Media::MediaFoundation::CODECAPI_AVEncCommonMeanBitRate, &var_bitrate);
             }
         }
     }
-}
 
     /// Drain all pending output from the MFT encoder
     unsafe fn drain_output(&self) -> Vec<u8> {
