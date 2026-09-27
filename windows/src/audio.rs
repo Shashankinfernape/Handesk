@@ -41,12 +41,31 @@ pub async fn start_audio_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
                     
                     // non-blocking try_send, drop chunk if channel is full
                     let _ = tx.try_send(pcm16);
+                    if data.iter().any(|&x| x > 0.01) { println!("RUST IS RECEIVING LOUD AUDIO FROM CPAL!"); }
                 },
                 err_fn,
                 None
             )?
         },
-        _ => return Err(anyhow!("Unsupported sample format (F32 expected)")),
+        cpal::SampleFormat::I16 => {
+            device.build_input_stream(
+                stream_config,
+                move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    if !AUDIO_ENABLED.load(Ordering::Relaxed) { return; }
+                    
+                    let mut pcm16 = Vec::with_capacity(data.len() * 2);
+                    for &sample in data.iter() {
+                        pcm16.extend_from_slice(&sample.to_le_bytes());
+                    }
+                    
+                    let _ = tx.try_send(pcm16);
+                    if data.iter().any(|&x| x > 100 || x < -100) { println!("RUST IS RECEIVING LOUD AUDIO FROM CPAL! (I16)"); }
+                },
+                err_fn,
+                None
+            )?
+        },
+        _ => return Err(anyhow!("Unsupported sample format: {:?}", sample_format)),
     };
     
     stream.play()?;
