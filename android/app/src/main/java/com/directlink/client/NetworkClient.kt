@@ -16,7 +16,7 @@ class NetworkClient {
     private var decoderJob: Job? = null
 
     val isConnected: Boolean
-        get() = socket != null
+        get() = socket != null || tcpSocket != null
 
     var inputPacketSender: ((ByteArray) -> Unit)? = null
     var videoFrameCallback: ((ByteArray) -> Unit)? = null
