@@ -150,7 +150,7 @@ class NetworkClient {
                     val payload = data.copyOfRange(15, 15 + chunkLen)
                     val nowMs = System.currentTimeMillis()
 
-                    val staleKeys = frameBuffers.entries.filter { nowMs - it.value.third > 150 }.map { it.key }
+                    val staleKeys = frameBuffers.entries.filter { nowMs - it.value.third > 300 }.map { it.key }
                     for (staleId in staleKeys) {
                         val entry = frameBuffers[staleId] ?: continue
                         // ASSEMBLE STALE FRAME EXACTLY AT OFFSETS
