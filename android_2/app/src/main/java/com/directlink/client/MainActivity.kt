@@ -264,41 +264,47 @@ fun RemoteSessionScreen(
         var isPcAudioOn by remember { mutableStateOf(true) }
         
         Box(modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                // PC Audio Toggle
-                IconButton(
-                    onClick = { 
-                        isPcAudioOn = !isPcAudioOn
-                        // networkClient.sendPcAudioToggle(isPcAudioOn)
-                    },
-                    modifier = Modifier.background(if (isPcAudioOn) Color(0x88000000) else Color(0x88FF3B30), CircleShape)
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                
+                // --- AUDIO PILL ---
+                Row(
+                    modifier = Modifier
+                        .background(Color(0xAA111111), RoundedCornerShape(50))
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        Icons.Filled.Home, 
-                        contentDescription = "PC Audio Toggle", 
-                        tint = Color.White
-                    )
+                    // PC Audio Toggle
+                    IconButton(
+                        onClick = { isPcAudioOn = !isPcAudioOn },
+                        modifier = Modifier.size(36.dp).background(Color(0x33FFFFFF), CircleShape)
+                    ) {
+                        Icon(
+                            Icons.Filled.Home, 
+                            contentDescription = "PC Audio Toggle", 
+                            tint = if (isPcAudioOn) Color(0xFF34C759) else Color(0xFFFF3B30),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    // Mobile Audio Toggle
+                    IconButton(
+                        onClick = { isMobileAudioOn = !isMobileAudioOn },
+                        modifier = Modifier.size(36.dp).background(Color(0x33FFFFFF), CircleShape)
+                    ) {
+                        Icon(
+                            Icons.Filled.Phone, 
+                            contentDescription = "Mobile Audio Toggle", 
+                            tint = if (isMobileAudioOn) Color(0xFF34C759) else Color(0xFFFF3B30),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
 
-                // Mobile Audio Toggle
-                IconButton(
-                    onClick = { 
-                        isMobileAudioOn = !isMobileAudioOn
-                        // networkClient.setMobileAudio(isMobileAudioOn)
-                    },
-                    modifier = Modifier.background(if (isMobileAudioOn) Color(0x88000000) else Color(0x88FF3B30), CircleShape)
-                ) {
-                    Icon(
-                        Icons.Filled.Phone, 
-                        contentDescription = "Mobile Audio Toggle", 
-                        tint = Color.White
-                    )
-                }
-
-                // Settings Gear
+                // --- SETTINGS GEAR ---
                 IconButton(
                     onClick = { expanded = true },
-                    modifier = Modifier.background(Color(0x88000000), CircleShape)
+                    modifier = Modifier.background(Color(0xAA111111), CircleShape)
                 ) {
                     Icon(Icons.Filled.Settings, contentDescription = "Quality Settings", tint = Color.White)
                 }
