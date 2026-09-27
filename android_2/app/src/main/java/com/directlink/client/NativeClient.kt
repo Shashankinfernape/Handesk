@@ -83,6 +83,12 @@ class NativeClient {
         sendInputPacket(payload)
     }
 
+    fun togglePcMute() {
+        // Send VK_VOLUME_MUTE (173) down and up
+        sendKeyEvent(173, true)
+        sendKeyEvent(173, false)
+    }
+
     // JNI External hooks
     private external fun connectNative(ip: String, surface: Surface)
     private external fun disconnectNative()

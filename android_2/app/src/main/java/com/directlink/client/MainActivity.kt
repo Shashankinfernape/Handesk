@@ -276,7 +276,10 @@ fun RemoteSessionScreen(
                 ) {
                     // PC Audio Toggle
                     IconButton(
-                        onClick = { isPcAudioOn = !isPcAudioOn },
+                        onClick = { 
+                            isPcAudioOn = !isPcAudioOn
+                            networkClient.togglePcMute()
+                        },
                         modifier = Modifier.size(36.dp).background(Color(0x33FFFFFF), CircleShape)
                     ) {
                         Icon(
