@@ -10,7 +10,7 @@ pub async fn start_audio_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
     let host = cpal::default_host();
     let device = host.default_output_device().context("No output device available")?;
     
-    info!("Loopback Capture Device: {}", device.name().unwrap_or_else(|_| "Unknown".to_string()));
+    // removed log
     
     let config = device.supported_output_configs()?
         .next()
@@ -27,7 +27,7 @@ pub async fn start_audio_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
     let stream = match sample_format {
         cpal::SampleFormat::F32 => {
             device.build_input_stream(
-                &stream_config.into(),
+                stream_config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     if !AUDIO_ENABLED.load(Ordering::Relaxed) { return; }
                     
