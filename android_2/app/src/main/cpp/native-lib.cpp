@@ -243,3 +243,14 @@ Java_com_directlink_client_NativeClient_sendInputNative(JNIEnv* env, jobject thi
         env->ReleaseByteArrayElements(packet, buffer_ptr, JNI_ABORT);
     }
 }
+
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_directlink_client_NativeClient_updateSurfaceNative(JNIEnv* env, jobject thiz, jobject surface) {
+    if (decoder && is_running) {
+        ANativeWindow* new_window = ANativeWindow_fromSurface(env, surface);
+        AMediaCodec_setOutputSurface(decoder, new_window);
+        if (window) ANativeWindow_release(window);
+        window = new_window;
+    }
+}

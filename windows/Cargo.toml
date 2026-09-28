@@ -22,8 +22,8 @@ windows = { version = "0.58.0", features = ["Win32_Media_MediaFoundation", "Win3
 rayon = "1.12.0"
 cpal = "0.18.2"
 opus-pure = "0.2.1"
-eframe = "0.36.2"
-egui = "0.36.2"
+eframe = "0.29.0"
+egui = "0.29.0"
 local-ip-address = "0.6.13"
 
 [target.'cfg(windows)'.dependencies.windows]
@@ -43,3 +43,7 @@ features = [
     "Win32_Media_MediaFoundation",
     "Graphics_Capture",
 ]
+
+[lib]
+name = "directlink_host"
+crate-type = ["cdylib", "rlib"]

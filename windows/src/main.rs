@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use anyhow::Result;
 use tracing::{info, error};
 use eframe::egui;
@@ -20,9 +22,6 @@ fn main() -> Result<()> {
         );
         windows::Win32::Media::timeBeginPeriod(1);
     }
-
-    tracing_subscriber::fmt::init();
-    info!("Starting DirectLink Host (Direct IP Server Mode - UDP)...");
 
     // Start background network server
     std::thread::spawn(|| {
@@ -65,10 +64,11 @@ struct DirectLinkApp {
 
 impl DirectLinkApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Set dark theme
+        cc.egui_ctx.set_visuals(egui::Visuals::dark());
+
         let mut style = (*cc.egui_ctx.style()).clone();
         
-        // Dark theme like AnyDesk
-        style.visuals = egui::Visuals::dark();
         // Background
         style.visuals.window_fill = egui::Color32::from_rgb(31, 31, 31);
         style.visuals.panel_fill = egui::Color32::from_rgb(31, 31, 31);

@@ -414,190 +414,303 @@ fun RemoteSessionScreen(
     var isPcAudioMuted by remember { mutableStateOf(false) }
     
     val focusRequester = remember { FocusRequester() }
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    
+    // --- KEYBOARD & ORIENTATION STATE ---
+    var isKeyboardActive by remember { mutableStateOf(false) }
+    var showSpecialKeys by remember { mutableStateOf(false) }
+    var isLandscape by remember { mutableStateOf(true) }
+    val activeModifiers = remember { mutableStateListOf<Int>() }
+    var textBuffer by remember { mutableStateOf("") }
+    
+    fun releaseAllRemoteKeys() {
+        activeModifiers.forEach { networkClient.sendKeyEvent(it, false) }
+        activeModifiers.clear()
+    }
 
-    // Lock landscape during remote session
+    fun toggleKeyboard() {
+        isKeyboardActive = !isKeyboardActive
+        if (isKeyboardActive) {
+            showSpecialKeys = true // auto-show special keys when typing
+            focusRequester.requestFocus()
+        } else {
+            focusManager.clearFocus()
+            releaseAllRemoteKeys()
+        }
+        showToolbar = false
+    }
+
+    // Handle Orientation
+    LaunchedEffect(isLandscape) {
+        activity.requestedOrientation = if (isLandscape) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+        }
+    }
+
     DisposableEffect(Unit) {
-        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         onDispose {
+            releaseAllRemoteKeys()
             activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
 
     BackHandler {
+        releaseAllRemoteKeys()
         onDisconnect()
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        
-        // --- VIDEO SURFACE ---
-        AndroidView(
-            modifier = Modifier
-                .fillMaxSize()
-                .wrapContentSize(Alignment.Center)
-                .aspectRatio(16f / 9f),
-            factory = { ctx ->
-                val surface = SurfaceView(ctx)
-                val touchHandler = DirectTouchHandler(networkClient, surface)
-                surface.setOnTouchListener(touchHandler)
-                surface.holder.addCallback(object : SurfaceHolder.Callback {
-                    override fun surfaceCreated(holder: SurfaceHolder) {
-                        networkClient.startNative(holder.surface)
+    // --- HIDDEN KEYBOARD INJECTOR ---
+    BasicTextField(
+        value = textBuffer,
+        onValueChange = { newStr ->
+            if (!isKeyboardActive) return@BasicTextField
+            if (newStr.length < textBuffer.length) {
+                // Backspace detected via string shrinkage
+                val diff = textBuffer.length - newStr.length
+                repeat(diff) {
+                    networkClient.sendKeyEvent(0x08, true)
+                    networkClient.sendKeyEvent(0x08, false)
+                }
+            } else if (newStr.length > textBuffer.length) {
+                // Characters added
+                val diffStr = newStr.substring(textBuffer.length)
+                for (newChar in diffStr) {
+                    val vkCode = VkMapper.getVkCode(newChar)
+                    val needsShift = VkMapper.requiresShift(newChar)
+                    
+                    if (needsShift && !activeModifiers.contains(0x10)) {
+                        networkClient.sendKeyEvent(0x10, true) // Shift down
                     }
-                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {}
-                    override fun surfaceDestroyed(holder: SurfaceHolder) {}
-                })
-                surface
-            }
-        )
-        
-        // --- HIDDEN KEYBOARD INJECTOR ---
-        BasicTextField(
-            value = "",
-            onValueChange = { str ->
-                if (str.isNotEmpty()) {
-                    val char = str.last()
-                    val vkCode = char.uppercaseChar().code
+                    
                     networkClient.sendKeyEvent(vkCode, true)
                     networkClient.sendKeyEvent(vkCode, false)
-                }
-            },
-            modifier = Modifier
-                .size(1.dp)
-                .focusRequester(focusRequester)
-                .onKeyEvent { keyEvent ->
-                    if (keyEvent.type == KeyEventType.KeyDown || keyEvent.type == KeyEventType.KeyUp) {
-                        val isDown = keyEvent.type == KeyEventType.KeyDown
-                        val vkCode = when (keyEvent.key) {
-                            Key.Backspace -> 0x08
-                            Key.Enter -> 0x0D
-                            Key.Spacebar -> 0x20
-                            else -> 0
-                        }
-                        if (vkCode != 0) {
-                            networkClient.sendKeyEvent(vkCode, isDown)
-                            return@onKeyEvent true
-                        }
+                    
+                    if (needsShift && !activeModifiers.contains(0x10)) {
+                        networkClient.sendKeyEvent(0x10, false) // Shift up
                     }
-                    false
                 }
-        )
+            }
+            textBuffer = newStr
+        },
+        keyboardOptions = KeyboardOptions(autoCorrect = false),
+        modifier = Modifier
+            .size(1.dp)
+            .focusRequester(focusRequester)
+            .onKeyEvent { keyEvent ->
+                if (!isKeyboardActive) return@onKeyEvent false
+                if (keyEvent.type == KeyEventType.KeyDown || keyEvent.type == KeyEventType.KeyUp) {
+                    val isDown = keyEvent.type == KeyEventType.KeyDown
+                    val vkCode = when (keyEvent.key) {
+                        Key.Backspace -> 0x08
+                        Key.Enter -> 0x0D
+                        Key.Spacebar -> 0x20
+                        else -> 0
+                    }
+                    if (vkCode != 0) {
+                        networkClient.sendKeyEvent(vkCode, isDown)
+                        return@onKeyEvent true
+                    }
+                }
+                false
+            }
+    )
 
-        // --- INTERACTIVE TOOLBAR ---
-        AnimatedVisibility(
-            visible = showToolbar,
-            enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
-            modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp)
-        ) {
-            Row(
+    var hasStartedNative by remember { mutableStateOf(false) }
+
+    Column(modifier = Modifier.fillMaxSize().background(Color.Black).imePadding()) {
+        
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            // --- VIDEO SURFACE ---
+            AndroidView(
                 modifier = Modifier
-                    .background(Color(0xD91E1E1E), RoundedCornerShape(32.dp))
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                // Keyboard
-                ToolbarIconButton(
-                    icon = Icons.Filled.Edit,
-                    label = "Keyboard",
-                    onClick = { 
-                        focusRequester.requestFocus() 
-                        showToolbar = false
-                    }
-                )
-                
-                // Display Quality
-                Box {
+                    .fillMaxSize()
+                    .wrapContentSize(Alignment.Center)
+                    .aspectRatio(16f / 9f),
+                factory = { ctx ->
+                    val surface = SurfaceView(ctx)
+                    val touchHandler = DirectTouchHandler(networkClient, surface)
+                    surface.setOnTouchListener(touchHandler)
+                    surface.holder.addCallback(object : SurfaceHolder.Callback {
+                        override fun surfaceCreated(holder: SurfaceHolder) {
+                            if (!hasStartedNative) {
+                                networkClient.startNative(holder.surface)
+                                hasStartedNative = true
+                            } else {
+                                networkClient.updateSurface(holder.surface)
+                            }
+                        }
+                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {}
+                        override fun surfaceDestroyed(holder: SurfaceHolder) {}
+                    })
+                    surface
+                }
+            )
+
+            // --- INTERACTIVE TOOLBAR ---
+            Box(modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp)) {
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = showToolbar,
+                    enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+                    exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut()
+                ) {
+                Row(
+                    modifier = Modifier
+                        .background(Color(0xD91E1E1E), RoundedCornerShape(32.dp))
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // System Keyboard
                     ToolbarIconButton(
-                        icon = Icons.Filled.Settings,
-                        label = "Quality",
-                        onClick = { expandedQualityMenu = true }
+                        icon = Icons.Filled.Edit,
+                        label = "Keyboard",
+                        tint = if (isKeyboardActive) BrandBlue else TextPrimary,
+                        onClick = { toggleKeyboard() }
                     )
                     
-                    DropdownMenu(
-                        expanded = expandedQualityMenu,
-                        onDismissRequest = { expandedQualityMenu = false },
-                        modifier = Modifier.background(SurfaceDark).width(200.dp)
-                    ) {
-                        val options = listOf(
-                            "Source (Lossless)" to 7,
-                            "1440p HD" to 6,
-                            "1080p HD" to 5,
-                            "720p" to 4,
-                            "480p" to 3,
-                            "360p" to 2,
-                            "240p" to 1,
-                            "144p" to 0,
-                            "Auto" to 4
+                    // Special Keys Toggle
+                    ToolbarIconButton(
+                        icon = Icons.Filled.Menu,
+                        label = "Special Keys",
+                        tint = if (showSpecialKeys) BrandBlue else TextPrimary,
+                        onClick = { 
+                            showSpecialKeys = !showSpecialKeys 
+                            showToolbar = false
+                        }
+                    )
+                    
+                    // Orientation Toggle
+                    ToolbarIconButton(
+                        icon = Icons.Filled.Refresh,
+                        label = "Rotate",
+                        tint = if (isLandscape) TextPrimary else BrandBlue,
+                        onClick = { 
+                            isLandscape = !isLandscape 
+                            showToolbar = false
+                        }
+                    )
+                    
+                    // Display Quality
+                    Box {
+                        ToolbarIconButton(
+                            icon = Icons.Filled.Settings,
+                            label = "Quality",
+                            onClick = { expandedQualityMenu = true }
                         )
-                        options.forEach { (label, level) ->
-                            DropdownMenuItem(
-                                text = { 
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        if (currentQuality == label) {
-                                            Icon(Icons.Filled.Check, contentDescription = null, tint = BrandBlue, modifier = Modifier.size(18.dp))
-                                        } else {
-                                            Spacer(Modifier.width(18.dp))
-                                        }
-                                        Spacer(Modifier.width(12.dp))
-                                        Text(label, color = TextPrimary, fontSize = 14.sp)
-                                    }
-                                },
-                                onClick = {
-                                    currentQuality = label
-                                    networkClient.sendQualityChange(level)
-                                    expandedQualityMenu = false
-                                    showToolbar = false
-                                }
+                        
+                        DropdownMenu(
+                            expanded = expandedQualityMenu,
+                            onDismissRequest = { expandedQualityMenu = false },
+                            modifier = Modifier.background(SurfaceDark).width(200.dp)
+                        ) {
+                            val options = listOf(
+                                "Source (Lossless)" to 7,
+                                "1440p HD" to 6,
+                                "1080p HD" to 5,
+                                "720p" to 4,
+                                "480p" to 3,
+                                "360p" to 2,
+                                "240p" to 1,
+                                "144p" to 0,
+                                "Auto" to 4
                             )
+                            options.forEach { (label, level) ->
+                                DropdownMenuItem(
+                                    text = { 
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            if (currentQuality == label) {
+                                                Icon(Icons.Filled.Check, contentDescription = null, tint = BrandBlue, modifier = Modifier.size(18.dp))
+                                            } else {
+                                                Spacer(Modifier.width(18.dp))
+                                            }
+                                            Spacer(Modifier.width(12.dp))
+                                            Text(label, color = TextPrimary, fontSize = 14.sp)
+                                        }
+                                    },
+                                    onClick = {
+                                        currentQuality = label
+                                        networkClient.sendQualityChange(level)
+                                        expandedQualityMenu = false
+                                        showToolbar = false
+                                    }
+                                )
+                            }
                         }
                     }
-                }
-                
-                // Audio PC Toggle
-                ToolbarIconButton(
-                    icon = if (isPcAudioMuted) Icons.Filled.Close else Icons.Filled.PlayArrow,
-                    label = "Audio",
-                    tint = if (isPcAudioMuted) TextSecondary else SuccessGreen,
-                    onClick = { 
-                        isPcAudioMuted = !isPcAudioMuted
-                        networkClient.togglePcMute() 
-                    }
-                )
+                    
+                    // Audio PC Toggle
+                    ToolbarIconButton(
+                        icon = if (isPcAudioMuted) Icons.Filled.Close else Icons.Filled.PlayArrow,
+                        label = "Audio",
+                        tint = if (isPcAudioMuted) TextSecondary else SuccessGreen,
+                        onClick = { 
+                            isPcAudioMuted = !isPcAudioMuted
+                            networkClient.togglePcMute() 
+                        }
+                    )
 
-                // Divider
-                Box(modifier = Modifier.height(24.dp).width(1.dp).background(SurfaceVariantDark))
-                
-                // Disconnect
-                ToolbarIconButton(
-                    icon = Icons.Filled.Close,
-                    label = "Disconnect",
-                    tint = ErrorRed,
-                    onClick = onDisconnect
-                )
-                
-                // Hide Toolbar
-                ToolbarIconButton(
-                    icon = Icons.Filled.KeyboardArrowUp,
-                    label = "Hide",
-                    onClick = { showToolbar = false }
-                )
+                    // Divider
+                    Box(modifier = Modifier.height(24.dp).width(1.dp).background(SurfaceVariantDark))
+                    
+                    // Disconnect
+                    ToolbarIconButton(
+                        icon = Icons.Filled.Close,
+                        label = "Disconnect",
+                        tint = ErrorRed,
+                        onClick = {
+                            releaseAllRemoteKeys()
+                            onDisconnect()
+                        }
+                    )
+                    
+                    // Hide Toolbar
+                    ToolbarIconButton(
+                        icon = Icons.Filled.KeyboardArrowUp,
+                        label = "Hide",
+                        onClick = { showToolbar = false }
+                    )
+                }
+            }
+            } // Close Box
+
+            // --- FLOATING MENU TOGGLE ---
+            if (!showToolbar) {
+                IconButton(
+                    onClick = { showToolbar = true },
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .background(
+                            color = Color(0x66000000),
+                            shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp)
+                        )
+                        .padding(horizontal = 24.dp, vertical = 4.dp)
+                ) {
+                    Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Menu", tint = Color.White)
+                }
             }
         }
-
-        // --- FLOATING MENU TOGGLE ---
-        if (!showToolbar) {
-            IconButton(
-                onClick = { showToolbar = true },
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .background(
-                        color = Color(0x66000000),
-                        shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp)
-                    )
-                    .padding(horizontal = 24.dp, vertical = 4.dp)
-            ) {
-                Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Menu", tint = Color.White)
+        
+        // --- SPECIAL KEYS TOOLBAR ---
+        if (showSpecialKeys) {
+            Box(modifier = Modifier.fillMaxWidth().background(Color(0xFF1E1E1E))) {
+                SpecialKeysToolbar(
+                    activeModifiers = activeModifiers.toSet(),
+                    onToggleModifier = { vk ->
+                        if (activeModifiers.contains(vk)) {
+                            networkClient.sendKeyEvent(vk, false)
+                            activeModifiers.remove(vk)
+                        } else {
+                            networkClient.sendKeyEvent(vk, true)
+                            activeModifiers.add(vk)
+                        }
+                    },
+                    onTapKey = { vk ->
+                        networkClient.sendKeyEvent(vk, true)
+                        networkClient.sendKeyEvent(vk, false)
+                    }
+                )
             }
         }
     }

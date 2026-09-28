@@ -1,9 +1,9 @@
 -- Merging decision tree log ---
 manifest
-ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:2:1-26:12
-INJECTED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:2:1-26:12
-INJECTED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:2:1-26:12
-INJECTED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:2:1-26:12
+ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:2:1-28:12
+INJECTED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:2:1-28:12
+INJECTED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:2:1-28:12
+INJECTED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:2:1-28:12
 MERGED from [androidx.activity:activity:1.8.2] C:\Users\user\.gradle\caches\transforms-4\cbde5845d1c5b59d6b708f6a3f7eb1c5\transformed\activity-1.8.2\AndroidManifest.xml:17:1-22:12
 MERGED from [androidx.activity:activity-ktx:1.8.2] C:\Users\user\.gradle\caches\transforms-4\c716d04ad8a4b04a05d4735fd7329a5e\transformed\activity-ktx-1.8.2\AndroidManifest.xml:2:1-7:12
 MERGED from [androidx.compose.material3:material3-android:1.2.0] C:\Users\user\.gradle\caches\transforms-4\f60e3b17163b7243e4d4503a85d802c4\transformed\material3-release\AndroidManifest.xml:17:1-22:12
@@ -69,8 +69,8 @@ ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main
 	android:name
 		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:7:22-83
 application
-ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:9:5-24:19
-INJECTED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:9:5-24:19
+ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:9:5-26:19
+INJECTED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:9:5-26:19
 MERGED from [androidx.emoji2:emoji2:1.3.0] C:\Users\user\.gradle\caches\transforms-4\d397ce0e9011ee2843040e481cf30671\transformed\emoji2-1.3.0\AndroidManifest.xml:23:5-33:19
 MERGED from [androidx.emoji2:emoji2:1.3.0] C:\Users\user\.gradle\caches\transforms-4\d397ce0e9011ee2843040e481cf30671\transformed\emoji2-1.3.0\AndroidManifest.xml:23:5-33:19
 MERGED from [androidx.core:core:1.12.0] C:\Users\user\.gradle\caches\transforms-4\2eb956e45289d92e65cf7cbef9e1bce3\transformed\core-1.12.0\AndroidManifest.xml:28:5-89
@@ -88,33 +88,37 @@ MERGED from [androidx.startup:startup-runtime:1.1.1] C:\Users\user\.gradle\cache
 	android:appComponentFactory
 		ADDED from [androidx.core:core:1.12.0] C:\Users\user\.gradle\caches\transforms-4\2eb956e45289d92e65cf7cbef9e1bce3\transformed\core-1.12.0\AndroidManifest.xml:28:18-86
 	android:supportsRtl
-		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:12:9-35
+		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:14:9-35
 	android:label
-		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:11:9-35
+		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:13:9-32
+	android:roundIcon
+		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:12:9-54
+	android:icon
+		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:11:9-43
 	android:allowBackup
 		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:10:9-35
 	android:theme
-		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:13:9-82
+		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:15:9-82
 	android:usesCleartextTraffic
-		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:14:9-44
+		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:16:9-44
 activity#com.directlink.client.MainActivity
-ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:15:9-23:20
+ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:17:9-25:20
 	android:exported
-		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:17:13-36
+		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:19:13-36
 	android:configChanges
-		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:18:13-87
+		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:20:13-87
 	android:name
-		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:16:13-41
+		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:18:13-41
 intent-filter#action:name:android.intent.action.MAIN+category:name:android.intent.category.LAUNCHER
-ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:19:13-22:29
+ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:21:13-24:29
 action#android.intent.action.MAIN
-ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:20:17-69
+ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:22:17-69
 	android:name
-		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:20:25-66
+		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:22:25-66
 category#android.intent.category.LAUNCHER
-ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:21:17-77
+ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:23:17-77
 	android:name
-		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:21:27-74
+		ADDED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml:23:27-74
 uses-sdk
 INJECTED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml reason: use-sdk injection requested
 INJECTED from C:\Users\user\Desktop\El projecto\Anydesk copy\android_2\app\src\main\AndroidManifest.xml

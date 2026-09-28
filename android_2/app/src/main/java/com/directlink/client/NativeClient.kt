@@ -63,6 +63,12 @@ class NativeClient {
         connectNative(activeIp, surface)
     }
 
+    fun updateSurface(surface: Surface) {
+        if (isConnected) {
+            updateSurfaceNative(surface)
+        }
+    }
+
     fun disconnect() {
         disconnectNative()
         isConnected = false
@@ -129,6 +135,7 @@ class NativeClient {
 
     // JNI External hooks
     private external fun connectNative(ip: String, surface: Surface)
+    private external fun updateSurfaceNative(surface: Surface)
     private external fun disconnectNative()
     private external fun sendInputNative(packet: ByteArray)
 }

@@ -24,7 +24,9 @@
         android:appComponentFactory="androidx.core.app.CoreComponentFactory"
         android:debuggable="true"
         android:extractNativeLibs="false"
-        android:label="DirectLink"
+        android:icon="@mipmap/ic_launcher"
+        android:label="Handesk"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
         android:usesCleartextTraffic="true" >
