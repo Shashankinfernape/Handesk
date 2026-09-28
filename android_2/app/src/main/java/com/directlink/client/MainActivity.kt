@@ -7,48 +7,58 @@ import android.os.Bundle
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.*
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.launch
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.input.key.*
+import java.util.UUID
+
+// Modern Dark Theme Colors
+private val BrandBlue = Color(0xFF0D6EFD)
+private val BrandBlueVariant = Color(0xFF0A58CA)
+private val DarkBg = Color(0xFF121212)
+private val SurfaceDark = Color(0xFF1E1E1E)
+private val SurfaceVariantDark = Color(0xFF2C2C2C)
+private val TextPrimary = Color(0xFFE0E0E0)
+private val TextSecondary = Color(0xFFA0A0A0)
+private val ErrorRed = Color(0xFFCF6679)
+private val SuccessGreen = Color(0xFF34C759)
 
 class MainActivity : ComponentActivity() {
     private val networkClient = NativeClient()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
+        
+        // Setup edge-to-edge window
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
         androidx.core.view.WindowInsetsControllerCompat(window, window.decorView).let { controller ->
             controller.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
@@ -56,7 +66,9 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            DirectLinkApp(networkClient, this)
+            DirectLinkTheme {
+                DirectLinkApp(networkClient, this)
+            }
         }
     }
 
@@ -67,15 +79,84 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
+fun DirectLinkTheme(content: @Composable () -> Unit) {
+    MaterialTheme(
+        colorScheme = darkColorScheme(
+            background = DarkBg,
+            surface = SurfaceDark,
+            surfaceVariant = SurfaceVariantDark,
+            primary = BrandBlue,
+            onPrimary = Color.White,
+            error = ErrorRed
+        ),
+        content = content
+    )
+}
+
+@Composable
 fun DirectLinkApp(networkClient: NativeClient, activity: Activity) {
     var isConnected by remember { mutableStateOf(networkClient.isConnected) }
+    var currentTab by remember { mutableIntStateOf(0) }
 
     if (!isConnected) {
-        HomeScreen(
-            networkClient = networkClient,
-            activity = activity,
-            onConnected = { isConnected = true }
-        )
+        Scaffold(
+            bottomBar = {
+                NavigationBar(
+                    containerColor = SurfaceDark,
+                    contentColor = TextPrimary
+                ) {
+                    NavigationBarItem(
+                        selected = currentTab == 0,
+                        onClick = { currentTab = 0 },
+                        icon = { Icon(Icons.Filled.Home, contentDescription = "Home") },
+                        label = { Text("Home") },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = BrandBlue,
+                            selectedTextColor = BrandBlue,
+                            unselectedIconColor = TextSecondary,
+                            unselectedTextColor = TextSecondary,
+                            indicatorColor = SurfaceVariantDark
+                        )
+                    )
+                    NavigationBarItem(
+                        selected = currentTab == 1,
+                        onClick = { currentTab = 1 },
+                        icon = { Icon(Icons.Filled.List, contentDescription = "Recent") },
+                        label = { Text("Recent") },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = BrandBlue,
+                            selectedTextColor = BrandBlue,
+                            unselectedIconColor = TextSecondary,
+                            unselectedTextColor = TextSecondary,
+                            indicatorColor = SurfaceVariantDark
+                        )
+                    )
+                    NavigationBarItem(
+                        selected = currentTab == 2,
+                        onClick = { currentTab = 2 },
+                        icon = { Icon(Icons.Filled.Settings, contentDescription = "Settings") },
+                        label = { Text("Settings") },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = BrandBlue,
+                            selectedTextColor = BrandBlue,
+                            unselectedIconColor = TextSecondary,
+                            unselectedTextColor = TextSecondary,
+                            indicatorColor = SurfaceVariantDark
+                        )
+                    )
+                }
+            }
+        ) { paddingValues ->
+            Box(modifier = Modifier.padding(paddingValues).fillMaxSize().background(DarkBg)) {
+                when (currentTab) {
+                    0 -> HomeTab(networkClient, activity, onConnected = { isConnected = true })
+                    1 -> RecentTab(activity, onConnect = { ip -> 
+                        // Handled natively below in the flow, but just a placeholder for tab navigation
+                    })
+                    2 -> SettingsTab()
+                }
+            }
+        }
     } else {
         RemoteSessionScreen(
             networkClient = networkClient,
@@ -89,127 +170,235 @@ fun DirectLinkApp(networkClient: NativeClient, activity: Activity) {
 }
 
 @Composable
-fun HomeScreen(
-    networkClient: NativeClient,
-    activity: Activity,
-    onConnected: () -> Unit
-) {
+fun HomeTab(networkClient: NativeClient, activity: Activity, onConnected: () -> Unit) {
     val prefs = activity.getSharedPreferences("DirectLinkPrefs", Context.MODE_PRIVATE)
     var hostIp by remember { mutableStateOf(prefs.getString("last_ip", "") ?: "") }
     var isConnecting by remember { mutableStateOf(false) }
     var errorMsg by remember { mutableStateOf("") }
     val coroutineScope = rememberCoroutineScope()
     
-    // Fake recent sessions for UI demonstration (in a real app, load from Room/Prefs)
-    val recentSessions = listOf("192.168.1.15", "10.0.0.23")
+    // Auto-generate a fake ID for this device to mimic real remote desktop apps
+    val localId by remember { mutableStateOf(prefs.getString("local_id", generateFakeId())?.also {
+        prefs.edit().putString("local_id", it).apply()
+    } ?: "000 000 000") }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0F0F16))
-            .padding(16.dp)
+            .padding(24.dp)
     ) {
-        // App Bar
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 32.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(Icons.Filled.Home, contentDescription = "Logo", tint = Color(0xFF00D4FF), modifier = Modifier.size(32.dp))
+        // App Header
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 32.dp)) {
+            Icon(Icons.Filled.Home, contentDescription = "Logo", tint = BrandBlue, modifier = Modifier.size(36.dp))
             Spacer(modifier = Modifier.width(16.dp))
-            Text("DirectLink Desktop", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Text("DirectLink", color = TextPrimary, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
         }
 
-        // Connection Card
+        // Your Desktop Card
         Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1A2E)),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
+            colors = CardDefaults.cardColors(containerColor = SurfaceDark),
             shape = RoundedCornerShape(16.dp)
         ) {
-            Column(modifier = Modifier.padding(24.dp)) {
-                Text("Control Remote Device", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text("This Desk", color = TextSecondary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
-                Text("Enter the Direct IP Address of the host machine.", color = Color(0xFF888899), fontSize = 14.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(localId, color = BrandBlue, fontSize = 32.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = { /* Copy to clipboard */ }) {
+                        Icon(Icons.Filled.Share, contentDescription = "Copy", tint = TextSecondary)
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(SuccessGreen))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Ready for incoming connection", color = TextSecondary, fontSize = 14.sp)
+                }
+            }
+        }
+
+        // Connect to Remote Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text("Control Remote Desk", color = TextSecondary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(16.dp))
                 
-                Row(
+                OutlinedTextField(
+                    value = hostIp,
+                    onValueChange = { hostIp = it },
+                    placeholder = { Text("Enter Remote ID or IP", color = Color.DarkGray) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(56.dp)
-                            .background(Color(0xFF0F0F16), RoundedCornerShape(8.dp))
-                            .padding(horizontal = 16.dp),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        if (hostIp.isEmpty()) {
-                            Text("e.g. 192.168.1.15", color = Color(0xFF444455), fontSize = 16.sp)
-                        }
-                        BasicTextField(
-                            value = hostIp,
-                            onValueChange = { hostIp = it },
-                            textStyle = TextStyle(color = Color.White, fontSize = 16.sp),
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                            cursorBrush = SolidColor(Color(0xFF00D4FF)),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                    
-                    Spacer(modifier = Modifier.width(12.dp))
-                    
-                    Button(
-                        onClick = {
-                            prefs.edit().putString("last_ip", hostIp).apply()
-                            coroutineScope.launch {
-                                isConnecting = true
-                                val err = networkClient.connectToHost(hostIp) // Back to UDP!
-                                isConnecting = false
-                                if (err == null) onConnected()
-                                else errorMsg = err
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = BrandBlue,
+                        unfocusedBorderColor = SurfaceVariantDark,
+                        focusedContainerColor = SurfaceVariantDark,
+                        unfocusedContainerColor = SurfaceVariantDark,
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary
+                    ),
+                    trailingIcon = {
+                        if (hostIp.isNotEmpty()) {
+                            IconButton(onClick = { hostIp = "" }) {
+                                Icon(Icons.Filled.Clear, contentDescription = "Clear", tint = TextSecondary)
                             }
-                        },
-                        modifier = Modifier.height(56.dp).width(120.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00D4FF)),
-                        enabled = !isConnecting && hostIp.isNotEmpty()
-                    ) {
-                        if (isConnecting) CircularProgressIndicator(color = Color.Black, modifier = Modifier.size(24.dp), strokeWidth = 3.dp)
-                        else Text("CONNECT", color = Color.Black, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                )
+                
+                Spacer(modifier = Modifier.height(20.dp))
+                
+                Button(
+                    onClick = {
+                        prefs.edit().putString("last_ip", hostIp).apply()
+                        
+                        // Maintain recent history
+                        val historySet = prefs.getStringSet("recent_ips", mutableSetOf())?.toMutableSet() ?: mutableSetOf()
+                        historySet.add(hostIp)
+                        prefs.edit().putStringSet("recent_ips", historySet).apply()
+
+                        coroutineScope.launch {
+                            isConnecting = true
+                            val err = networkClient.connectToHost(hostIp)
+                            isConnecting = false
+                            if (err == null) onConnected()
+                            else errorMsg = err
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = BrandBlue),
+                    enabled = !isConnecting && hostIp.isNotEmpty()
+                ) {
+                    if (isConnecting) {
+                        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Text("Connecting...", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    } else {
+                        Icon(Icons.Filled.ArrowForward, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Connect", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                     }
                 }
                 
                 if (errorMsg.isNotEmpty()) {
                     Spacer(Modifier.height(16.dp))
-                    Text(errorMsg, color = Color(0xFFFF4444), fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                    Text(errorMsg, color = ErrorRed, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                 }
             }
         }
-        
-        Spacer(Modifier.height(32.dp))
-        Text("RECENT SESSIONS", color = Color(0xFF555566), fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-        Spacer(Modifier.height(8.dp))
-        
-        LazyColumn {
-            items(recentSessions) { sessionIp ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp)
-                        .background(Color(0xFF1A1A2E), RoundedCornerShape(8.dp))
-                        .clickable { 
-                            hostIp = sessionIp
+    }
+}
+
+@Composable
+fun RecentTab(activity: Activity, onConnect: (String) -> Unit) {
+    val prefs = activity.getSharedPreferences("DirectLinkPrefs", Context.MODE_PRIVATE)
+    val history = prefs.getStringSet("recent_ips", setOf())?.toList() ?: emptyList()
+
+    Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
+        Text("Recent Sessions", color = TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(24.dp))
+
+        if (history.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("No recent sessions", color = TextSecondary)
+            }
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(history) { ip ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier.size(48.dp).background(SurfaceVariantDark, CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Filled.Home, contentDescription = null, tint = BrandBlue)
+                            }
+                            Spacer(Modifier.width(16.dp))
+                            Column {
+                                Text(ip, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                                Text("Offline", color = TextSecondary, fontSize = 12.sp)
+                            }
                         }
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Filled.Home, contentDescription = null, tint = Color(0xFF888899))
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Text(sessionIp, color = Color.White, fontSize = 16.sp)
+                    }
                 }
             }
         }
+    }
+}
+
+@Composable
+fun SettingsTab() {
+    Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
+        Text("Settings", color = TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(24.dp))
+
+        SettingsGroup("General") {
+            SettingsItem(Icons.Filled.Place, "Language", "System Default")
+            SettingsItem(Icons.Filled.Face, "Theme", "Dark")
+        }
+        
+        Spacer(Modifier.height(24.dp))
+        
+        SettingsGroup("Security") {
+            SettingsItem(Icons.Filled.Lock, "Unattended Access", "Disabled")
+            SettingsItem(Icons.Filled.Lock, "Change Password", "")
+        }
+
+        Spacer(Modifier.height(24.dp))
+        
+        SettingsGroup("Network") {
+            SettingsItem(Icons.Filled.Share, "Direct Connection", "Enabled")
+        }
+    }
+}
+
+@Composable
+fun SettingsGroup(title: String, content: @Composable () -> Unit) {
+    Column {
+        Text(title, color = BrandBlue, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 8.dp, bottom = 8.dp))
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column {
+                content()
+            }
+        }
+    }
+}
+
+@Composable
+fun SettingsItem(icon: ImageVector, title: String, subtitle: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable { }.padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(24.dp))
+        Spacer(Modifier.width(16.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, color = TextPrimary, fontSize = 16.sp)
+            if (subtitle.isNotEmpty()) {
+                Text(subtitle, color = TextSecondary, fontSize = 12.sp)
+            }
+        }
+        Icon(Icons.Filled.KeyboardArrowRight, contentDescription = null, tint = SurfaceVariantDark)
     }
 }
 
@@ -220,10 +409,13 @@ fun RemoteSessionScreen(
     onDisconnect: () -> Unit
 ) {
     var showToolbar by remember { mutableStateOf(false) }
+    var expandedQualityMenu by remember { mutableStateOf(false) }
+    var currentQuality by remember { mutableStateOf("Auto") }
+    var isPcAudioMuted by remember { mutableStateOf(false) }
     
-    // Keyboard Injection
     val focusRequester = remember { FocusRequester() }
 
+    // Lock landscape during remote session
     DisposableEffect(Unit) {
         activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         onDispose {
@@ -231,139 +423,38 @@ fun RemoteSessionScreen(
         }
     }
 
+    BackHandler {
+        onDisconnect()
+    }
+
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        
         // --- VIDEO SURFACE ---
         AndroidView(
             modifier = Modifier
                 .fillMaxSize()
-                .wrapContentSize(Alignment.BottomCenter)
+                .wrapContentSize(Alignment.Center)
                 .aspectRatio(16f / 9f),
             factory = { ctx ->
                 val surface = SurfaceView(ctx)
                 val touchHandler = DirectTouchHandler(networkClient, surface)
                 surface.setOnTouchListener(touchHandler)
-
                 surface.holder.addCallback(object : SurfaceHolder.Callback {
                     override fun surfaceCreated(holder: SurfaceHolder) {
                         networkClient.startNative(holder.surface)
                     }
                     override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {}
-                    override fun surfaceDestroyed(holder: SurfaceHolder) {
-                        // C++ teardown handles it
-                    }
+                    override fun surfaceDestroyed(holder: SurfaceHolder) {}
                 })
                 surface
             }
         )
-        
-        // --- AUDIO AND QUALITY SETTINGS ---
-        var expanded by remember { mutableStateOf(false) }
-        var currentQuality by remember { mutableStateOf("Auto") }
-        
-        var isMobileAudioOn by remember { mutableStateOf(true) }
-        var isPcAudioOn by remember { mutableStateOf(true) }
-        
-        Box(modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                
-                // --- AUDIO PILL ---
-                Row(
-                    modifier = Modifier
-                        .background(Color(0xAA111111), RoundedCornerShape(50))
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // PC Audio Toggle
-                    IconButton(
-                        onClick = { 
-                            isPcAudioOn = !isPcAudioOn
-                            networkClient.togglePcMute()
-                        },
-                        modifier = Modifier.size(36.dp).background(Color(0x33FFFFFF), CircleShape)
-                    ) {
-                        Icon(
-                            Icons.Filled.Home, 
-                            contentDescription = "PC Audio Toggle", 
-                            tint = if (isPcAudioOn) Color(0xFF34C759) else Color(0xFFFF3B30),
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-
-                    // Mobile Audio Toggle
-                    IconButton(
-                        onClick = { isMobileAudioOn = !isMobileAudioOn },
-                        modifier = Modifier.size(36.dp).background(Color(0x33FFFFFF), CircleShape)
-                    ) {
-                        Icon(
-                            Icons.Filled.Phone, 
-                            contentDescription = "Mobile Audio Toggle", 
-                            tint = if (isMobileAudioOn) Color(0xFF34C759) else Color(0xFFFF3B30),
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-
-                // --- SETTINGS GEAR ---
-                IconButton(
-                    onClick = { expanded = true },
-                    modifier = Modifier.background(Color(0xAA111111), CircleShape)
-                ) {
-                    Icon(Icons.Filled.Settings, contentDescription = "Quality Settings", tint = Color.White)
-                }
-            }
-            DropdownMenu(
-                expanded = expanded,
-                onDismissRequest = { expanded = false },
-                modifier = Modifier.background(Color(0xFF212121))
-            ) {
-                Text(
-                    text = "Quality for current connection",
-                    color = Color.Gray,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                    fontSize = 14.sp
-                )
-                
-                val options = listOf(
-                    "Source (Lossless)" to 7,
-                    "1440p HD" to 6,
-                    "1080p HD" to 5,
-                    "720p" to 4,
-                    "480p" to 3,
-                    "360p" to 2,
-                    "240p" to 1,
-                    "144p" to 0,
-                    "Auto" to 4
-                )
-                
-                options.forEach { (label, level) ->
-                    DropdownMenuItem(
-                        text = { 
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (currentQuality == label) {
-                                    Text("✓ ", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.width(24.dp))
-                                } else {
-                                    Spacer(modifier = Modifier.width(24.dp))
-                                }
-                                Text(label, color = Color.White, fontSize = 16.sp)
-                            }
-                        },
-                        onClick = { 
-                            currentQuality = label
-                            networkClient.sendQualityChange(level)
-                            expanded = false 
-                        }
-                    )
-                }
-            }
-        }
         
         // --- HIDDEN KEYBOARD INJECTOR ---
         BasicTextField(
             value = "",
             onValueChange = { str ->
                 if (str.isNotEmpty()) {
-                    // Send over UDP (rudimentary ASCII mapping for PoC)
                     val char = str.last()
                     val vkCode = char.uppercaseChar().code
                     networkClient.sendKeyEvent(vkCode, true)
@@ -374,7 +465,6 @@ fun RemoteSessionScreen(
                 .size(1.dp)
                 .focusRequester(focusRequester)
                 .onKeyEvent { keyEvent ->
-                    // Handle Backspace, Enter, etc.
                     if (keyEvent.type == KeyEventType.KeyDown || keyEvent.type == KeyEventType.KeyUp) {
                         val isDown = keyEvent.type == KeyEventType.KeyDown
                         val vkCode = when (keyEvent.key) {
@@ -392,44 +482,143 @@ fun RemoteSessionScreen(
                 }
         )
 
-        // --- RUSTDESK FLOATING ACTION BUTTON ---
-        if (!showToolbar) {
-            FloatingActionButton(
-                onClick = { showToolbar = true },
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(32.dp),
-                containerColor = Color(0xAA1A1A2E), // Semi-transparent
-                contentColor = Color(0xFF00D4FF),
-                shape = CircleShape
-            ) {
-                Icon(Icons.Filled.Menu, contentDescription = "Menu")
-            }
-        }
-        
-        // --- RUSTDESK TOOLBAR ---
-        if (showToolbar) {
+        // --- INTERACTIVE TOOLBAR ---
+        AnimatedVisibility(
+            visible = showToolbar,
+            enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp)
+        ) {
             Row(
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 32.dp)
-                    .background(Color(0xEE1A1A2E), RoundedCornerShape(32.dp))
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    .background(Color(0xD91E1E1E), RoundedCornerShape(32.dp))
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                IconButton(onClick = { focusRequester.requestFocus() }) {
-                    Icon(Icons.Filled.Edit, contentDescription = "Keyboard", tint = Color.White)
+                // Keyboard
+                ToolbarIconButton(
+                    icon = Icons.Filled.Edit,
+                    label = "Keyboard",
+                    onClick = { 
+                        focusRequester.requestFocus() 
+                        showToolbar = false
+                    }
+                )
+                
+                // Display Quality
+                Box {
+                    ToolbarIconButton(
+                        icon = Icons.Filled.Settings,
+                        label = "Quality",
+                        onClick = { expandedQualityMenu = true }
+                    )
+                    
+                    DropdownMenu(
+                        expanded = expandedQualityMenu,
+                        onDismissRequest = { expandedQualityMenu = false },
+                        modifier = Modifier.background(SurfaceDark).width(200.dp)
+                    ) {
+                        val options = listOf(
+                            "Source (Lossless)" to 7,
+                            "1440p HD" to 6,
+                            "1080p HD" to 5,
+                            "720p" to 4,
+                            "480p" to 3,
+                            "360p" to 2,
+                            "240p" to 1,
+                            "144p" to 0,
+                            "Auto" to 4
+                        )
+                        options.forEach { (label, level) ->
+                            DropdownMenuItem(
+                                text = { 
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (currentQuality == label) {
+                                            Icon(Icons.Filled.Check, contentDescription = null, tint = BrandBlue, modifier = Modifier.size(18.dp))
+                                        } else {
+                                            Spacer(Modifier.width(18.dp))
+                                        }
+                                        Spacer(Modifier.width(12.dp))
+                                        Text(label, color = TextPrimary, fontSize = 14.sp)
+                                    }
+                                },
+                                onClick = {
+                                    currentQuality = label
+                                    networkClient.sendQualityChange(level)
+                                    expandedQualityMenu = false
+                                    showToolbar = false
+                                }
+                            )
+                        }
+                    }
                 }
                 
-                IconButton(onClick = onDisconnect) {
-                    Icon(Icons.Filled.Close, contentDescription = "Disconnect", tint = Color(0xFFFF4444))
-                }
+                // Audio PC Toggle
+                ToolbarIconButton(
+                    icon = if (isPcAudioMuted) Icons.Filled.Close else Icons.Filled.PlayArrow,
+                    label = "Audio",
+                    tint = if (isPcAudioMuted) TextSecondary else SuccessGreen,
+                    onClick = { 
+                        isPcAudioMuted = !isPcAudioMuted
+                        networkClient.togglePcMute() 
+                    }
+                )
+
+                // Divider
+                Box(modifier = Modifier.height(24.dp).width(1.dp).background(SurfaceVariantDark))
                 
-                IconButton(onClick = { showToolbar = false }) {
-                    Icon(Icons.Filled.Menu, contentDescription = "Close Menu", tint = Color(0xFF00D4FF))
-                }
+                // Disconnect
+                ToolbarIconButton(
+                    icon = Icons.Filled.Close,
+                    label = "Disconnect",
+                    tint = ErrorRed,
+                    onClick = onDisconnect
+                )
+                
+                // Hide Toolbar
+                ToolbarIconButton(
+                    icon = Icons.Filled.KeyboardArrowUp,
+                    label = "Hide",
+                    onClick = { showToolbar = false }
+                )
+            }
+        }
+
+        // --- FLOATING MENU TOGGLE ---
+        if (!showToolbar) {
+            IconButton(
+                onClick = { showToolbar = true },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .background(
+                        color = Color(0x66000000),
+                        shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp)
+                    )
+                    .padding(horizontal = 24.dp, vertical = 4.dp)
+            ) {
+                Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Menu", tint = Color.White)
             }
         }
     }
+}
+
+@Composable
+fun ToolbarIconButton(
+    icon: ImageVector,
+    label: String,
+    tint: Color = TextPrimary,
+    onClick: () -> Unit
+) {
+    IconButton(
+        onClick = onClick,
+        modifier = Modifier.size(44.dp).clip(CircleShape)
+    ) {
+        Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(22.dp))
+    }
+}
+
+private fun generateFakeId(): String {
+    val rng = java.util.Random()
+    return "${rng.nextInt(900)+100} ${rng.nextInt(900)+100} ${rng.nextInt(900)+100}"
 }
