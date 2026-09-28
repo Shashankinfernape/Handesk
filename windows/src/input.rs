@@ -4,7 +4,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
     MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
-    MOUSEEVENTF_WHEEL, KEYEVENTF_KEYUP,
+    MOUSEEVENTF_WHEEL, MOUSEEVENTF_HWHEEL, KEYEVENTF_KEYUP,
 };
 use std::mem::size_of;
 
@@ -27,10 +27,16 @@ pub fn handle_input_payload(payload: &[u8]) {
                 inject_mouse_button(button, down);
             }
         }
-        0x03 => { // Scroll
+        0x03 => { // Scroll Vertical
             if payload.len() >= 3 {
                 let delta = i16::from_be_bytes([payload[1], payload[2]]) as i32;
                 inject_scroll(delta);
+            }
+        }
+        0x06 => { // Scroll Horizontal
+            if payload.len() >= 3 {
+                let delta = i16::from_be_bytes([payload[1], payload[2]]) as i32;
+                inject_hscroll(delta);
             }
         }
         0x04 => { // KeyEvent
@@ -105,6 +111,20 @@ fn inject_scroll(delta: i32) {
         dx: 0, dy: 0,
         mouseData: delta as u32,
         dwFlags: MOUSEEVENTF_WHEEL,
+        time: 0, dwExtraInfo: 0,
+    };
+    unsafe {
+        let _ = SendInput(&[input], size_of::<INPUT>() as i32);
+    }
+}
+
+fn inject_hscroll(delta: i32) {
+    let mut input = INPUT::default();
+    input.r#type = INPUT_MOUSE;
+    input.Anonymous.mi = MOUSEINPUT {
+        dx: 0, dy: 0,
+        mouseData: delta as u32,
+        dwFlags: MOUSEEVENTF_HWHEEL,
         time: 0, dwExtraInfo: 0,
     };
     unsafe {

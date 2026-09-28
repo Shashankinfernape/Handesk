@@ -63,7 +63,7 @@ class NativeClient {
         connectNative(activeIp, surface)
     }
 
-    fun updateSurface(surface: Surface) {
+    fun updateSurface(surface: Surface?) {
         if (isConnected) {
             updateSurfaceNative(surface)
         }
@@ -112,6 +112,14 @@ class NativeClient {
         sendInputPacket(payload)
     }
 
+    fun sendMouseHScroll(delta: Int) {
+        val payload = ByteArray(3)
+        payload[0] = 0x06
+        payload[1] = (delta ushr 8).toByte()
+        payload[2] = delta.toByte()
+        sendInputPacket(payload)
+    }
+
     fun sendKeyEvent(vkCode: Int, down: Boolean) {
         val payload = ByteArray(3)
         payload[0] = 0x04
@@ -135,7 +143,7 @@ class NativeClient {
 
     // JNI External hooks
     private external fun connectNative(ip: String, surface: Surface)
-    private external fun updateSurfaceNative(surface: Surface)
+    private external fun updateSurfaceNative(surface: Surface?)
     private external fun disconnectNative()
     private external fun sendInputNative(packet: ByteArray)
 }

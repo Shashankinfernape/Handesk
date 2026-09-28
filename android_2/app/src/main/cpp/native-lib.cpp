@@ -35,6 +35,12 @@ struct FrameBuffer {
     long long timestamp_ms;
 };
 
+#include <mutex>
+#include <atomic>
+
+std::mutex decoder_mutex;
+std::atomic<bool> has_surface{false};
+
 long long current_time_ms() {
     struct timespec res;
     clock_gettime(CLOCK_MONOTONIC, &res);
@@ -42,6 +48,7 @@ long long current_time_ms() {
 }
 
 void decode_nalu(const std::vector<uint8_t>& data) {
+    std::lock_guard<std::mutex> lock(decoder_mutex);
     if (!decoder) return;
 
     // Detect Keyframe (VPS 32, SPS 33, PPS 34, IDR 19/20)
@@ -81,7 +88,7 @@ void decode_nalu(const std::vector<uint8_t>& data) {
     AMediaCodecBufferInfo info;
     ssize_t out_idx = AMediaCodec_dequeueOutputBuffer(decoder, &info, 0);
     while (out_idx >= 0) {
-        AMediaCodec_releaseOutputBuffer(decoder, out_idx, true);
+        AMediaCodec_releaseOutputBuffer(decoder, out_idx, has_surface.load());
         out_idx = AMediaCodec_dequeueOutputBuffer(decoder, &info, 0);
     }
 }
@@ -180,6 +187,7 @@ void network_loop(std::string ip) {
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_directlink_client_NativeClient_connectNative(JNIEnv* env, jobject thiz, jstring ip_jstr, jobject surface) {
+    std::lock_guard<std::mutex> lock(decoder_mutex);
     if (is_running) return;
     
     const char* ip_cstr = env->GetStringUTFChars(ip_jstr, nullptr);
@@ -192,7 +200,13 @@ Java_com_directlink_client_NativeClient_connectNative(JNIEnv* env, jobject thiz,
     std::string ip(ip_cstr);
     env->ReleaseStringUTFChars(ip_jstr, ip_cstr);
 
-    window = ANativeWindow_fromSurface(env, surface);
+    if (surface != nullptr) {
+        window = ANativeWindow_fromSurface(env, surface);
+        has_surface = true;
+    } else {
+        window = nullptr;
+        has_surface = false;
+    }
     
     decoder = AMediaCodec_createDecoderByType("video/hevc");
     AMediaFormat* format = AMediaFormat_new();
@@ -219,6 +233,7 @@ Java_com_directlink_client_NativeClient_disconnectNative(JNIEnv* env, jobject th
         network_thread.join();
     }
     
+    std::lock_guard<std::mutex> lock(decoder_mutex);
     if (decoder) {
         AMediaCodec_stop(decoder);
         AMediaCodec_delete(decoder);
@@ -228,6 +243,7 @@ Java_com_directlink_client_NativeClient_disconnectNative(JNIEnv* env, jobject th
         ANativeWindow_release(window);
         window = nullptr;
     }
+    has_surface = false;
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -247,10 +263,18 @@ Java_com_directlink_client_NativeClient_sendInputNative(JNIEnv* env, jobject thi
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_directlink_client_NativeClient_updateSurfaceNative(JNIEnv* env, jobject thiz, jobject surface) {
+    std::lock_guard<std::mutex> lock(decoder_mutex);
     if (decoder && is_running) {
+        if (surface == nullptr) {
+            has_surface = false;
+            return;
+        }
         ANativeWindow* new_window = ANativeWindow_fromSurface(env, surface);
-        AMediaCodec_setOutputSurface(decoder, new_window);
-        if (window) ANativeWindow_release(window);
-        window = new_window;
+        if (new_window) {
+            AMediaCodec_setOutputSurface(decoder, new_window);
+            if (window) ANativeWindow_release(window);
+            window = new_window;
+            has_surface = true;
+        }
     }
 }

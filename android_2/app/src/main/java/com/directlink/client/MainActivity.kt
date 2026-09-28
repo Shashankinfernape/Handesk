@@ -527,10 +527,11 @@ fun RemoteSessionScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .wrapContentSize(Alignment.Center)
-                    .aspectRatio(16f / 9f),
+                    .aspectRatio(16f / 9f, matchHeightConstraintsFirst = isLandscape),
                 factory = { ctx ->
                     val surface = SurfaceView(ctx)
                     val touchHandler = DirectTouchHandler(networkClient, surface)
+                    surface.tag = touchHandler
                     surface.setOnTouchListener(touchHandler)
                     surface.holder.addCallback(object : SurfaceHolder.Callback {
                         override fun surfaceCreated(holder: SurfaceHolder) {
@@ -542,9 +543,32 @@ fun RemoteSessionScreen(
                             }
                         }
                         override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {}
-                        override fun surfaceDestroyed(holder: SurfaceHolder) {}
+                        override fun surfaceDestroyed(holder: SurfaceHolder) {
+                            networkClient.updateSurface(null)
+                        }
                     })
                     surface
+                },
+                update = { view ->
+                    val handler = view.tag as? DirectTouchHandler
+                    handler?.onSetKeyboard = { swipedUp ->
+                        if (swipedUp) {
+                            if (!isKeyboardActive) {
+                                isKeyboardActive = true
+                                focusRequester.requestFocus()
+                            } else if (!showSpecialKeys) {
+                                showSpecialKeys = true
+                            }
+                        } else {
+                            if (showSpecialKeys) {
+                                showSpecialKeys = false
+                            } else if (isKeyboardActive) {
+                                isKeyboardActive = false
+                                focusManager.clearFocus()
+                                releaseAllRemoteKeys()
+                            }
+                        }
+                    }
                 }
             )
 
