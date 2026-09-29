@@ -212,6 +212,7 @@ fun RemoteSessionScreen(
 ) {
     var videoDecoder by remember { mutableStateOf<VideoDecoder?>(null) }
     var showToolbar by remember { mutableStateOf(false) }
+    var videoAspectRatio by remember { mutableStateOf(16f / 9f) }
     
     // Keyboard Injection
     val focusRequester = remember { FocusRequester() }
@@ -228,10 +229,7 @@ fun RemoteSessionScreen(
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         // --- VIDEO SURFACE ---
         AndroidView(
-            modifier = Modifier
-                .fillMaxSize()
-                .wrapContentSize(Alignment.Center)
-                .aspectRatio(16f / 9f),
+            modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 val surface = SurfaceView(ctx)
                 val touchHandler = DirectTouchHandler(networkClient, surface)
@@ -239,7 +237,14 @@ fun RemoteSessionScreen(
 
                 surface.holder.addCallback(object : SurfaceHolder.Callback {
                     override fun surfaceCreated(holder: SurfaceHolder) {
-                        val decoder = VideoDecoder(holder.surface, 1600, 900)
+                        val decoder = VideoDecoder(holder.surface, 1600, 900) { w, h ->
+                            if (h > 0) {
+                                activity.runOnUiThread {
+                                    videoAspectRatio = w.toFloat() / h.toFloat()
+                                    touchHandler.videoAspectRatio = videoAspectRatio
+                                }
+                            }
+                        }
                         decoder.start()
                         videoDecoder = decoder
                         networkClient.videoFrameCallback = { nalu -> decoder.decodeNalu(nalu) }
@@ -324,25 +329,90 @@ fun RemoteSessionScreen(
         
         // --- RUSTDESK TOOLBAR ---
         if (showToolbar) {
+            var fpsExpanded by remember { mutableStateOf(false) }
+            var qualityExpanded by remember { mutableStateOf(false) }
+            var currentFps by remember { mutableStateOf(60) }
+            var currentBitrate by remember { mutableStateOf(2000000) }
+            var audioEnabled by remember { mutableStateOf(AudioPlayer.isEnabled) }
+
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 32.dp)
-                    .background(Color(0xEE1A1A2E), RoundedCornerShape(32.dp))
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    .padding(bottom = 24.dp)
+                    .background(Color(0xE01A1A2E), RoundedCornerShape(32.dp))
+                    .padding(horizontal = 24.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                horizontalArrangement = Arrangement.spacedBy(20.dp)
             ) {
                 IconButton(onClick = { focusRequester.requestFocus() }) {
-                    Icon(Icons.Filled.Edit, contentDescription = "Keyboard", tint = Color.White)
+                    Icon(androidx.compose.material.icons.Icons.Filled.Edit, contentDescription = "Keyboard", tint = Color.White, modifier = Modifier.size(28.dp))
+                }
+
+                TextButton(onClick = { 
+                    audioEnabled = !audioEnabled
+                    AudioPlayer.isEnabled = audioEnabled
+                }) {
+                    Text(
+                        if (audioEnabled) "Audio: ON" else "Audio: OFF",
+                        color = if (audioEnabled) Color(0xFF00D4FF) else Color.Gray,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                Box {
+                    TextButton(onClick = { fpsExpanded = true }) {
+                        Text("$currentFps FPS", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    DropdownMenu(expanded = fpsExpanded, onDismissRequest = { fpsExpanded = false }) {
+                        listOf(30, 45, 60, 75, 90, 105, 120, 135, 150).forEach { fps ->
+                            DropdownMenuItem(
+                                text = { Text("$fps FPS") },
+                                onClick = { 
+                                    currentFps = fps
+                                    fpsExpanded = false
+                                    networkClient.sendSettings(currentFps, currentBitrate)
+                                }
+                            )
+                        }
+                    }
+                }
+
+                Box {
+                    TextButton(onClick = { qualityExpanded = true }) {
+                        Text("Quality", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    DropdownMenu(expanded = qualityExpanded, onDismissRequest = { qualityExpanded = false }) {
+                        val qualities = listOf(
+                            Pair(500000, "144p"),
+                            Pair(1000000, "240p"),
+                            Pair(1500000, "360p"),
+                            Pair(2000000, "480p"),
+                            Pair(5000000, "720p"),
+                            Pair(10000000, "1080p"),
+                            Pair(20000000, "1440p"),
+                            Pair(40000000, "2160p"),
+                            Pair(100000000, "Lossless")
+                        )
+                        qualities.forEach { (bitrate, label) ->
+                            DropdownMenuItem(
+                                text = { Text(label) },
+                                onClick = { 
+                                    currentBitrate = bitrate
+                                    qualityExpanded = false
+                                    networkClient.sendSettings(currentFps, currentBitrate)
+                                }
+                            )
+                        }
+                    }
                 }
                 
                 IconButton(onClick = onDisconnect) {
-                    Icon(Icons.Filled.Close, contentDescription = "Disconnect", tint = Color(0xFFFF4444))
+                    Icon(androidx.compose.material.icons.Icons.Filled.Close, contentDescription = "Disconnect", tint = Color(0xFFFF4444), modifier = Modifier.size(28.dp))
                 }
                 
                 IconButton(onClick = { showToolbar = false }) {
-                    Icon(Icons.Filled.Menu, contentDescription = "Close Menu", tint = Color(0xFF00D4FF))
+                    Icon(androidx.compose.material.icons.Icons.Filled.Menu, contentDescription = "Hide Menu", tint = Color(0xFF00D4FF), modifier = Modifier.size(28.dp))
                 }
             }
         }

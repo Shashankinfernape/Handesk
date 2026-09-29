@@ -5,7 +5,7 @@ import android.media.MediaFormat
 import android.view.Surface
 import java.nio.ByteBuffer
 
-class VideoDecoder(private val surface: Surface, width: Int, height: Int) {
+class VideoDecoder(private val surface: Surface, width: Int, height: Int, private val onVideoSizeChanged: ((Int, Int) -> Unit)? = null) {
     private val decoder = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC)
     private var isRunning = false
 
@@ -73,8 +73,25 @@ class VideoDecoder(private val surface: Surface, width: Int, height: Int) {
             // Drain all ready output frames to the surface
             val info = MediaCodec.BufferInfo()
             var outIndex = decoder.dequeueOutputBuffer(info, 0)
-            while (outIndex >= 0) {
-                decoder.releaseOutputBuffer(outIndex, true)
+            while (outIndex >= 0 || outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    val format = decoder.outputFormat
+                    var w = format.getInteger(MediaFormat.KEY_WIDTH)
+                    var h = format.getInteger(MediaFormat.KEY_HEIGHT)
+                    
+                    if (format.containsKey("crop-left") && format.containsKey("crop-right")) {
+                        w = format.getInteger("crop-right") - format.getInteger("crop-left") + 1
+                    }
+                    if (format.containsKey("crop-top") && format.containsKey("crop-bottom")) {
+                        h = format.getInteger("crop-bottom") - format.getInteger("crop-top") + 1
+                    }
+                    
+                    if (w > 0 && h > 0) {
+                        onVideoSizeChanged?.invoke(w, h)
+                    }
+                } else if (outIndex >= 0) {
+                    decoder.releaseOutputBuffer(outIndex, true)
+                }
                 outIndex = decoder.dequeueOutputBuffer(info, 0)
             }
         } catch (e: Exception) {
