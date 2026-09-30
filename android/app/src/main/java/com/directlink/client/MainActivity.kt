@@ -214,10 +214,12 @@ fun RemoteSessionScreen(
 ) {
     var videoDecoder by remember { mutableStateOf<VideoDecoder?>(null) }
     var showToolbar by remember { mutableStateOf(false) }
+    var isKeyboardOpen by remember { mutableStateOf(false) }
     var videoAspectRatio by remember { mutableStateOf(16f / 9f) }
     
     // Keyboard Injection
     val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
 
     DisposableEffect(Unit) {
         activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
@@ -229,24 +231,17 @@ fun RemoteSessionScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        // --- VIDEO: TextureView + full-screen touch overlay inside a FrameLayout ---
-        // Using a FrameLayout lets us stack the TextureView (video) and a transparent
-        // View (touch overlay) as siblings inside a single AndroidView. The overlay
-        // sits on top and captures all touches. The TextureView gets setTransform(Matrix)
-        // calls for real visual zoom/pan without affecting Compose touch dispatch.
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 val frame = android.widget.FrameLayout(ctx)
 
-                // TextureView for video output
                 val textureView = TextureView(ctx)
                 frame.addView(textureView, android.widget.FrameLayout.LayoutParams(
                     android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
                     android.widget.FrameLayout.LayoutParams.MATCH_PARENT
                 ))
 
-                // Full-screen transparent overlay — receives all touches
                 val overlay = View(ctx)
                 frame.addView(overlay, android.widget.FrameLayout.LayoutParams(
                     android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
@@ -255,11 +250,21 @@ fun RemoteSessionScreen(
 
                 val touchHandler = DirectTouchHandler(networkClient, textureView, overlay)
                 
-                touchHandler.onTwoFingerSwipeUp = {
-                    activity.runOnUiThread { focusRequester.requestFocus() }
+                touchHandler.onTwoFingerSingleTap = {
+                    activity.runOnUiThread {
+                        if (isKeyboardOpen) {
+                            focusManager.clearFocus()
+                            isKeyboardOpen = false
+                        } else {
+                            focusRequester.requestFocus()
+                            isKeyboardOpen = true
+                        }
+                    }
                 }
-                touchHandler.onTwoFingerSwipeDown = {
-                    activity.runOnUiThread { showToolbar = true }
+                touchHandler.onTwoFingerDoubleTap = {
+                    activity.runOnUiThread { 
+                        showToolbar = !showToolbar 
+                    }
                 }
 
                 overlay.setOnTouchListener(touchHandler)
@@ -326,6 +331,9 @@ fun RemoteSessionScreen(
             modifier = Modifier
                 .size(1.dp)
                 .focusRequester(focusRequester)
+                .androidx.compose.ui.focus.onFocusChanged { state ->
+                    isKeyboardOpen = state.isFocused
+                }
                 .onKeyEvent { keyEvent ->
                     // Handle Backspace, Enter, etc.
                     if (keyEvent.type == KeyEventType.KeyDown || keyEvent.type == KeyEventType.KeyUp) {
