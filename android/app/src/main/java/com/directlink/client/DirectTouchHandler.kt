@@ -82,14 +82,29 @@ class DirectTouchHandler(
     private var scrollLastY  = 0f
     private var scrollIntegral = 0f
 
-    // --- 2-finger UI taps ---
-    private var twoFingerDownTime = 0L
+    // --- Foolproof Gesture Lifecycle ---
+    private var gestureStartTime = 0L
+    private var maxPointers = 0
+    private var gestureStartX = 0f
+    private var gestureStartY = 0f
+    private var gestureMaxMove = 0f
+
     private var twoFingerTapCount = 0
-    private var twoFingerStartMax = 0f
     private val tapHandler = Handler(Looper.getMainLooper())
     private val twoFingerSingleTapRunnable = Runnable {
         onTwoFingerSingleTap?.invoke()
         twoFingerTapCount = 0
+    }
+
+    private fun handleTwoFingerTap() {
+        twoFingerTapCount++
+        if (twoFingerTapCount == 1) {
+            tapHandler.postDelayed(twoFingerSingleTapRunnable, 400)
+        } else if (twoFingerTapCount == 2) {
+            tapHandler.removeCallbacks(twoFingerSingleTapRunnable)
+            onTwoFingerDoubleTap?.invoke()
+            twoFingerTapCount = 0
+        }
     }
 
     // --- 3-finger zoom + pan ---
@@ -112,20 +127,29 @@ class DirectTouchHandler(
     }
 
     override fun onTouch(v: View, event: MotionEvent): Boolean {
-        if (event.pointerCount == 1) gestureDetector.onTouchEvent(event)
+        if (event.pointerCount == 1 && maxPointers <= 1) {
+            gestureDetector.onTouchEvent(event)
+        }
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 scrollLastY = event.y 
                 scrollIntegral = 0f
                 threeFingerActive = false
+                
+                gestureStartTime = System.currentTimeMillis()
+                maxPointers = 1
+                gestureMaxMove = 0f
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
+                if (event.pointerCount > maxPointers) {
+                    maxPointers = event.pointerCount
+                }
                 when (event.pointerCount) {
                     2 -> {
-                        twoFingerDownTime = System.currentTimeMillis()
-                        twoFingerStartMax = 0f
+                        gestureStartX = (event.getX(0) + event.getX(1)) / 2f
+                        gestureStartY = (event.getY(0) + event.getY(1)) / 2f
                     }
                     3 -> {
                         val (cx, cy) = centroid(event)
@@ -137,26 +161,27 @@ class DirectTouchHandler(
             }
 
             MotionEvent.ACTION_MOVE -> {
+                if (maxPointers == 2 && !threeFingerActive && event.pointerCount == 2) {
+                    val cx = (event.getX(0) + event.getX(1)) / 2f
+                    val cy = (event.getY(0) + event.getY(1)) / 2f
+                    val dist = hypot(cx - gestureStartX, cy - gestureStartY)
+                    if (dist > gestureMaxMove) gestureMaxMove = dist
+                }
+
                 when (event.pointerCount) {
                     1 -> {
-                        val cy = event.y
-                        val dy = cy - scrollLastY
-                        scrollIntegral += dy / 3f
-                        when {
-                            scrollIntegral >  1f -> { networkClient.sendMouseScroll(( scrollIntegral * 25f).toInt()); scrollIntegral = 0f }
-                            scrollIntegral < -1f -> { networkClient.sendMouseScroll((scrollIntegral * 25f).toInt()); scrollIntegral = 0f }
-                        }
-                        scrollLastY = cy
-                    }
-
-                    2 -> {
-                        if (!threeFingerActive) {
-                            // Track distance moved to invalidate tap if they swipe/drag too far
-                            val dist = hypot(event.getX(0) - event.getX(1), event.getY(0) - event.getY(1))
-                            if (dist > twoFingerStartMax) twoFingerStartMax = dist
+                        // Only scroll if we haven't seen multiple fingers in this gesture
+                        if (maxPointers == 1) {
+                            val cy = event.y
+                            val dy = cy - scrollLastY
+                            scrollIntegral += dy / 3f
+                            when {
+                                scrollIntegral >  1f -> { networkClient.sendMouseScroll(( scrollIntegral * 25f).toInt()); scrollIntegral = 0f }
+                                scrollIntegral < -1f -> { networkClient.sendMouseScroll((scrollIntegral * 25f).toInt()); scrollIntegral = 0f }
+                            }
+                            scrollLastY = cy
                         }
                     }
-
                     3 -> {
                         if (!threeFingerActive) return@onTouch true
                         val (cx, cy) = centroid(event)
@@ -179,26 +204,16 @@ class DirectTouchHandler(
             }
 
             MotionEvent.ACTION_POINTER_UP -> {
-                when (event.pointerCount) {
-                    3 -> {
-                        threeFingerActive = false
-                    }
-                    2 -> {
-                        if (!threeFingerActive && System.currentTimeMillis() - twoFingerDownTime < 300) {
-                            twoFingerTapCount++
-                            if (twoFingerTapCount == 1) {
-                                tapHandler.postDelayed(twoFingerSingleTapRunnable, 300)
-                            } else if (twoFingerTapCount == 2) {
-                                tapHandler.removeCallbacks(twoFingerSingleTapRunnable)
-                                onTwoFingerDoubleTap?.invoke()
-                                twoFingerTapCount = 0
-                            }
-                        }
-                    }
+                if (event.pointerCount == 3) {
+                    threeFingerActive = false
                 }
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val duration = System.currentTimeMillis() - gestureStartTime
+                if (maxPointers == 2 && duration < 600 && gestureMaxMove < 200f) {
+                    handleTwoFingerTap()
+                }
                 threeFingerActive = false
             }
         }
