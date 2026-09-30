@@ -72,20 +72,6 @@ class DirectTouchHandler(
         return Pair(nx, ny)
     }
 
-    // ── Long-press drag ───────────────────────────────────────────────────────
-    private var isHoldDragging = false
-    private val handler = Handler(Looper.getMainLooper())
-    private var startX = 0f; private var startY = 0f
-    private var isLongPressCanceled = false
-    private val longPressRunnable = Runnable {
-        if (!isLongPressCanceled) { 
-            isHoldDragging = true
-            val (nx, ny) = screenToNorm(startX, startY)
-            networkClient.sendMouseMove(nx, ny)
-            networkClient.sendMouseButton(1, true) 
-        }
-    }
-
     // ── Tap / double-tap ─────────────────────────────────────────────────────
     private val gestureDetector = GestureDetector(overlayView.context,
         object : GestureDetector.SimpleOnGestureListener() {
@@ -139,11 +125,7 @@ class DirectTouchHandler(
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                startX = event.x; startY = event.y
                 scrollLastY = event.y // track for 1-finger scroll
-                isLongPressCanceled = false
-                handler.removeCallbacks(longPressRunnable)
-                handler.postDelayed(longPressRunnable, 700)
                 
                 // Note: INTENTIONALLY NOT sending mouse move here.
                 // It ensures a pure "touch" interface without hover trails.
@@ -154,9 +136,6 @@ class DirectTouchHandler(
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
-                isLongPressCanceled = true; handler.removeCallbacks(longPressRunnable)
-                if (isHoldDragging) { networkClient.sendMouseButton(1, false); isHoldDragging = false }
-
                 when (event.pointerCount) {
                     2 -> {
                         scrollStartY = (event.getY(0) + event.getY(1)) / 2f
@@ -178,24 +157,14 @@ class DirectTouchHandler(
             MotionEvent.ACTION_MOVE -> {
                 when (event.pointerCount) {
                     1 -> {
-                        if (!isLongPressCanceled &&
-                            (abs(event.x - startX) > 15f || abs(event.y - startY) > 15f)) {
-                            isLongPressCanceled = true; handler.removeCallbacks(longPressRunnable)
+                        val cy = event.y
+                        val dy = cy - scrollLastY // reusing scrollLastY initialized in ACTION_DOWN
+                        scrollIntegral += dy / 3f
+                        when {
+                            scrollIntegral >  1f -> { networkClient.sendMouseScroll(( scrollIntegral * 25f).toInt()); scrollIntegral = 0f }
+                            scrollIntegral < -1f -> { networkClient.sendMouseScroll((scrollIntegral * 25f).toInt()); scrollIntegral = 0f }
                         }
-                        
-                        if (isHoldDragging) {
-                            val (nx, ny) = screenToNorm(event.x, event.y)
-                            networkClient.sendMouseMove(nx, ny)
-                        } else if (isLongPressCanceled) { // Normal 1-finger drag -> Scroll
-                            val cy = event.y
-                            val dy = cy - scrollLastY // reusing scrollLastY initialized in ACTION_DOWN
-                            scrollIntegral += dy / 3f
-                            when {
-                                scrollIntegral >  1f -> { networkClient.sendMouseScroll(( scrollIntegral * 25f).toInt()); scrollIntegral = 0f }
-                                scrollIntegral < -1f -> { networkClient.sendMouseScroll((scrollIntegral * 25f).toInt()); scrollIntegral = 0f }
-                            }
-                            scrollLastY = cy
-                        }
+                        scrollLastY = cy
                     }
 
                     2 -> {
@@ -252,8 +221,6 @@ class DirectTouchHandler(
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                isLongPressCanceled = true; handler.removeCallbacks(longPressRunnable)
-                if (isHoldDragging) { networkClient.sendMouseButton(1, false); isHoldDragging = false }
                 scrollActive = false; threeFingerActive = false
                 twoFingerSwipeTriggered = false
                 scrollIntegral = 0f
