@@ -427,6 +427,7 @@ fun RemoteSessionScreen(
     // --- KEYBOARD & ORIENTATION STATE ---
     var isKeyboardActive by remember { mutableStateOf(false) }
     var showSpecialKeys by remember { mutableStateOf(false) }
+    var isKeyboardClosingPhase by remember { mutableStateOf(false) }
     var isLandscape by remember { mutableStateOf(true) }
     val activeModifiers = remember { mutableStateListOf<Int>() }
     var textBuffer by remember { mutableStateOf("") }
@@ -511,6 +512,13 @@ fun RemoteSessionScreen(
         modifier = Modifier
             .size(1.dp)
             .focusRequester(focusRequester)
+            .androidx.compose.ui.focus.onFocusChanged { state ->
+                if (!state.isFocused && isKeyboardActive) {
+                    isKeyboardActive = false
+                    showSpecialKeys = false
+                    isKeyboardClosingPhase = false
+                }
+            }
             .onKeyEvent { keyEvent ->
                 if (!isKeyboardActive) return@onKeyEvent false
                 if (keyEvent.type == KeyEventType.KeyDown || keyEvent.type == KeyEventType.KeyUp) {
@@ -633,12 +641,26 @@ fun RemoteSessionScreen(
                     val touchHandler = DirectTouchHandler(networkClient, surface)
                     touchHandler.onTwoFingerSingleTap = {
                         activity.runOnUiThread {
-                            toggleKeyboard()
-                        }
-                    }
-                    touchHandler.onTwoFingerDoubleTap = {
-                        activity.runOnUiThread {
-                            showToolbar = !showToolbar
+                            if (!isKeyboardActive) {
+                                // 1st tap: bring keyboard up alone
+                                isKeyboardActive = true
+                                showSpecialKeys = false
+                                isKeyboardClosingPhase = false
+                                focusRequester.requestFocus()
+                            } else if (!showSpecialKeys && !isKeyboardClosingPhase) {
+                                // 2nd tap: bring special keys up
+                                showSpecialKeys = true
+                            } else if (showSpecialKeys) {
+                                // 3rd tap (closing): special keys get down
+                                showSpecialKeys = false
+                                isKeyboardClosingPhase = true
+                            } else if (isKeyboardClosingPhase) {
+                                // 4th tap (closing): keyboard gets down
+                                isKeyboardActive = false
+                                isKeyboardClosingPhase = false
+                                focusManager.clearFocus()
+                                releaseAllRemoteKeys()
+                            }
                         }
                     }
                     surface.tag = touchHandler

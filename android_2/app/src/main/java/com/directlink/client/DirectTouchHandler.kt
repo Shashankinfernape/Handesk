@@ -8,6 +8,7 @@ import android.view.View
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.sqrt
+import kotlin.math.hypot
 
 class DirectTouchHandler(
     private val networkClient: NativeClient,
@@ -15,7 +16,6 @@ class DirectTouchHandler(
 ) : View.OnTouchListener {
 
     var onTwoFingerSingleTap: (() -> Unit)? = null
-    var onTwoFingerDoubleTap: (() -> Unit)? = null
 
     private var isHoldDragging = false
     private var isDoubleTapPending = false
@@ -118,22 +118,13 @@ class DirectTouchHandler(
     private var gestureStartY = 0f
     private var gestureMaxMove = 0f
 
-    private var twoFingerTapCount = 0
     private val tapHandler = Handler(Looper.getMainLooper())
     private val twoFingerSingleTapRunnable = Runnable {
         onTwoFingerSingleTap?.invoke()
-        twoFingerTapCount = 0
     }
 
     private fun handleTwoFingerTap() {
-        twoFingerTapCount++
-        if (twoFingerTapCount == 1) {
-            tapHandler.postDelayed(twoFingerSingleTapRunnable, 400)
-        } else if (twoFingerTapCount == 2) {
-            tapHandler.removeCallbacks(twoFingerSingleTapRunnable)
-            onTwoFingerDoubleTap?.invoke()
-            twoFingerTapCount = 0
-        }
+        onTwoFingerSingleTap?.invoke()
     }
 
     // Custom 2-Finger State Machine 
