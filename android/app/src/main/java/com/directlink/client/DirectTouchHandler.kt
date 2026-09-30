@@ -1,90 +1,104 @@
 package com.directlink.client
 
+import android.graphics.Matrix
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
+import android.view.TextureView
 import android.view.View
 import android.os.Handler
 import android.os.Looper
 import kotlin.math.abs
 
 /**
- * DirectTouchHandler — RustDesk-style implementation.
+ * DirectTouchHandler — TextureView + RustDesk-style implementation.
  *
- * ARCHITECTURE (matches RustDesk's canvas model):
- * - The SurfaceView NEVER has scaleX/Y or translationX/Y applied to it.
- * - We maintain our own canvas state: canvasX, canvasY (pan offset), canvasScale (zoom).
- * - On every touch, we map screen coords → remote coords using:
- *     remoteX = (screenX - canvasX) / canvasScale
- *     remoteY = (screenY - canvasY) / canvasScale
- *   Then normalise to [0..65535].
+ * ARCHITECTURE:
+ * - TextureView (not SurfaceView) allows setTransform(Matrix) for REAL VISUAL zoom/pan.
+ * - This touch handler is set on a FULL-SCREEN transparent overlay view, NOT on the
+ *   TextureView itself. This ensures touches are captured everywhere on screen, including
+ *   in the zoomed-out areas when the image is panned.
+ * - Coordinate mapping uses the INVERSE of the visual transform matrix (exact RustDesk pattern).
  *
- * WHY this avoids the coordinate bug:
- * - We never apply any Android view transform, so event.x / event.y are always
- *   pure, reliable screen-relative pixels relative to the SurfaceView's top-left.
- * - No Compose/View inverse-transform confusion whatsoever.
+ * VISUAL ZOOM FORMULA (applied to TextureView):
+ *   Matrix m; m.setScale(scale, scale); m.postTranslate(panX, panY)
+ *   → Content pixel at (cx, cy) appears at screen pixel (cx*scale + panX, cy*scale + panY)
  *
- * VISUALS:
- * - To show the zoomed image the video itself must be zoomed. We achieve this by
- *   using a TextureView in the future. For now, as a first step, pinch triggers
- *   server-side Ctrl+Scroll which zooms the remote OS (same as RustDesk mobile
- *   when scroll-style is set to "adaptive"). Touch accuracy is perfect.
+ * TOUCH INVERSE FORMULA (touch → remote):
+ *   contentX = (screenX - panX) / scale    (RustDesk: x -= canvas.x; x /= canvas.scale)
+ *   contentY = (screenY - panY) / scale
+ *   Then subtract black-bar padding and normalize to [0..65535]
  *
  * GESTURES:
- *   1 finger move     → mouse move
- *   1 finger tap      → left click
- *   1 finger double   → right click
- *   1 finger hold     → left-button drag
- *   2 finger scroll   → mouse wheel
- *   2 finger pinch    → Ctrl+Scroll (remote zoom)
- *   3 finger swipe up → Win+Tab (Task View)
+ *   1 finger tap          → left click
+ *   1 finger double-tap   → right click
+ *   1 finger long-hold    → left button drag
+ *   1 finger move         → mouse move
+ *   2 finger pinch        → visual zoom in/out (centered on fingers)
+ *   2 finger pan          → pan the zoomed view (move camera)
+ *   2 finger scroll       → mouse wheel (when NOT pinching)
+ *   3 finger swipe-up     → Win+Tab (Task View)
  */
 class DirectTouchHandler(
     private val networkClient: NetworkClient,
-    private val view: View
+    private val textureView: TextureView,
+    private val overlayView: View   // The full-screen transparent view that captures touches
 ) : View.OnTouchListener {
 
-    /** Set from VideoDecoder callback whenever stream dimensions change. */
+    /** Updated from VideoDecoder callback with the real decoded video dimensions. */
     var videoAspectRatio = 16f / 9f
 
     // ── RustDesk-style canvas viewport state ─────────────────────────────────
-    // These represent where the "camera" is looking on the remote screen.
-    // At scale=1, canvasX=canvasY=0 → full remote screen maps 1:1 to the view.
-    private var canvasScale = 1.0f
-    private var canvasX = 0f   // pan offset in screen pixels
-    private var canvasY = 0f
+    private var scale = 1f
+    private var panX = 0f
+    private var panY = 0f
 
-    /** Map a screen pixel (relative to view top-left) to a normalised remote coordinate. */
-    private fun screenToNorm(screenX: Float, screenY: Float, vw: Float, vh: Float): Pair<Int, Int> {
-        // 1. Account for hardware black bars (letterbox / pillarbox)
-        val viewAR = vw / vh
-        val videoW: Float
-        val videoH: Float
-        val padX: Float
-        val padY: Float
+    /** Apply the current zoom/pan as a Matrix transform on the TextureView. */
+    private fun applyTransform() {
+        if (scale <= 1.001f) {
+            scale = 1f; panX = 0f; panY = 0f
+            textureView.post { textureView.setTransform(null) }
+            return
+        }
+        // Clamp pan so the image doesn't float off-screen
+        val tw = textureView.width.toFloat()
+        val th = textureView.height.toFloat()
+        panX = panX.coerceIn(tw * (1f - scale), 0f)
+        panY = panY.coerceIn(th * (1f - scale), 0f)
+
+        val m = Matrix()
+        m.setScale(scale, scale)
+        m.postTranslate(panX, panY)
+        textureView.post { textureView.setTransform(m) }
+    }
+
+    /** Map a screen pixel (relative to overlay top-left) → normalised remote coord [0..65535].
+     *  Applies inverse-transform then black-bar correction. Mirrors RustDesk input_model.dart. */
+    private fun screenToNorm(sx: Float, sy: Float): Pair<Int, Int> {
+        val tw = textureView.width.toFloat()
+        val th = textureView.height.toFloat()
+
+        // 1. Invert the visual zoom/pan transform (RustDesk: x -= canvas.x; x /= canvas.scale)
+        val contentX = (sx - panX) / scale
+        val contentY = (sy - panY) / scale
+
+        // 2. Black-bar correction (video may be letterboxed/pillarboxed inside the TextureView)
+        val viewAR = if (th > 0f) tw / th else 16f / 9f
+        val videoW: Float; val videoH: Float; val padX: Float; val padY: Float
         if (videoAspectRatio > viewAR) {
-            videoW = vw
-            videoH = vw / videoAspectRatio
-            padX = 0f
-            padY = (vh - videoH) / 2f
+            videoW = tw; videoH = tw / videoAspectRatio
+            padX = 0f;  padY = (th - videoH) / 2f
         } else {
-            videoH = vh
-            videoW = vh * videoAspectRatio
-            padX = (vw - videoW) / 2f
-            padY = 0f
+            videoH = th; videoW = th * videoAspectRatio
+            padX = (tw - videoW) / 2f; padY = 0f
         }
 
-        // 2. Convert to video-local coords (remove black bar padding)
-        val localX = screenX - padX
-        val localY = screenY - padY
+        val videoLocalX = contentX - padX
+        val videoLocalY = contentY - padY
 
-        // 3. Apply RustDesk formula: subtract pan, divide by scale
-        val remoteX = (localX - canvasX) / canvasScale
-        val remoteY = (localY - canvasY) / canvasScale
-
-        // 4. Normalise to [0..65535]
-        val normX = ((remoteX / videoW) * 65535f).toInt().coerceIn(0, 65535)
-        val normY = ((remoteY / videoH) * 65535f).toInt().coerceIn(0, 65535)
+        // 3. Normalise to [0..65535] and clamp (RustDesk: tryGetNearestRange with 5px snap)
+        val normX = ((videoLocalX / videoW) * 65535f).toInt().coerceIn(0, 65535)
+        val normY = ((videoLocalY / videoH) * 65535f).toInt().coerceIn(0, 65535)
         return Pair(normX, normY)
     }
 
@@ -94,85 +108,69 @@ class DirectTouchHandler(
     private var startX = 0f; private var startY = 0f
     private var isLongPressCanceled = false
     private val longPressRunnable = Runnable {
-        if (!isLongPressCanceled) {
-            isHoldDragging = true
-            networkClient.sendMouseButton(1, true)
-        }
+        if (!isLongPressCanceled) { isHoldDragging = true; networkClient.sendMouseButton(1, true) }
     }
 
     // ── Tap / double-tap ─────────────────────────────────────────────────────
-    private val gestureDetector = GestureDetector(view.context,
+    private val gestureDetector = GestureDetector(overlayView.context,
         object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapUp(e: MotionEvent): Boolean {
-                networkClient.sendMouseButton(1, true)
-                networkClient.sendMouseButton(1, false)
+                networkClient.sendMouseButton(1, true); networkClient.sendMouseButton(1, false)
                 return true
             }
             override fun onDoubleTap(e: MotionEvent): Boolean {
-                networkClient.sendMouseButton(2, true)
-                networkClient.sendMouseButton(2, false)
+                networkClient.sendMouseButton(2, true); networkClient.sendMouseButton(2, false)
                 return true
             }
         })
 
-    // ── Pinch-to-zoom + 2-finger pan ─────────────────────────────────────────
-    private var isScrollConfirmed = false
+    // ── Pinch zoom + 2-finger pan ─────────────────────────────────────────────
     private var isPinchActive = false
+    private var isScrollConfirmed = false
     private var lastFocusX = 0f; private var lastFocusY = 0f
+    // Accumulated absolute scale factor (RustDesk pattern: _scale field, ratio = d.scale / _scale)
+    private var pinchStartScale = 1f
 
-    private val scaleGestureDetector = ScaleGestureDetector(view.context,
+    private val scaleGestureDetector = ScaleGestureDetector(overlayView.context,
         object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScaleBegin(d: ScaleGestureDetector): Boolean {
                 isPinchActive = true
-                lastFocusX = d.focusX
-                lastFocusY = d.focusY
+                pinchStartScale = scale   // capture canvas scale at gesture start
+                lastFocusX = d.focusX; lastFocusY = d.focusY
                 return true
             }
 
             override fun onScale(d: ScaleGestureDetector): Boolean {
-                val factor = d.scaleFactor
-                val newScale = (canvasScale * factor).coerceIn(1f, 8f)
+                val focalX = d.focusX; val focalY = d.focusY
+                val factor = d.scaleFactor.coerceIn(0.8f, 1.25f) // clamp per-frame change
 
-                // Zoom centred on the pinch focus point (RustDesk approach)
-                val focusX = d.focusX
-                val focusY = d.focusY
-                canvasX = focusX - (focusX - canvasX) * (newScale / canvasScale)
-                canvasY = focusY - (focusY - canvasY) * (newScale / canvasScale)
+                val newScale = (scale * factor).coerceIn(1f, 8f)
+                val ratio = newScale / scale
 
-                // 2-finger pan while pinching
-                canvasX += focusX - lastFocusX
-                canvasY += focusY - lastFocusY
+                // RustDesk formula: _x = focalPoint.dx - (focalPoint.dx - _x) / s * _scale
+                panX = focalX - (focalX - panX) * ratio
+                panY = focalY - (focalY - panY) * ratio
 
-                canvasScale = newScale
-                lastFocusX = focusX
-                lastFocusY = focusY
+                // 2-finger pan delta (RustDesk: panX/panY(focalPointDelta))
+                panX += focalX - lastFocusX
+                panY += focalY - lastFocusY
 
-                constrainCanvas()
+                scale = newScale
+                lastFocusX = focalX; lastFocusY = focalY
+
+                applyTransform()
                 return true
             }
 
-            override fun onScaleEnd(d: ScaleGestureDetector) {
-                isPinchActive = false
-            }
+            override fun onScaleEnd(d: ScaleGestureDetector) { isPinchActive = false }
         })
 
-    /** Keep the canvas from panning beyond the view edges. */
-    private fun constrainCanvas() {
-        // At scale 1, no translation allowed (full image fits view)
-        if (canvasScale <= 1f) {
-            canvasX = 0f; canvasY = 0f; canvasScale = 1f
-            return
-        }
-        val maxX = 0f;          val minX = view.width  * (1f - canvasScale)
-        val maxY = 0f;          val minY = view.height * (1f - canvasScale)
-        canvasX = canvasX.coerceIn(minX, maxX)
-        canvasY = canvasY.coerceIn(minY, maxY)
-    }
-
-    // ── 2-finger scroll ───────────────────────────────────────────────────────
+    // ── 2-finger scroll (mouse wheel) ─────────────────────────────────────────
     private var startScrollY = 0f; private var lastScrollY = 0f
+    // Integrator (RustDesk: _mouseScrollIntegral += delta / 4; send when crosses ±1)
+    private var scrollIntegral = 0f
 
-    // ── 3-finger swipe-up ─────────────────────────────────────────────────────
+    // ── 3-finger swipe-up → Win+Tab ─────────────────────────────────────────
     private var threeFingerStartY = 0f; private var threeFingerTriggered = false
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -180,7 +178,7 @@ class DirectTouchHandler(
         gestureDetector.onTouchEvent(event)
         scaleGestureDetector.onTouchEvent(event)
 
-        val (normX, normY) = screenToNorm(event.x, event.y, v.width.toFloat(), v.height.toFloat())
+        val (normX, normY) = screenToNorm(event.x, event.y)
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -192,12 +190,11 @@ class DirectTouchHandler(
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
-                isLongPressCanceled = true
-                handler.removeCallbacks(longPressRunnable)
+                isLongPressCanceled = true; handler.removeCallbacks(longPressRunnable)
                 when (event.pointerCount) {
                     2 -> {
                         startScrollY = event.getY(1); lastScrollY = event.getY(1)
-                        isScrollConfirmed = false
+                        isScrollConfirmed = false; scrollIntegral = 0f
                     }
                     3 -> { threeFingerStartY = event.y; threeFingerTriggered = false }
                 }
@@ -209,33 +206,35 @@ class DirectTouchHandler(
                         if (!isPinchActive) {
                             if (!isLongPressCanceled &&
                                 (abs(event.x - startX) > 15f || abs(event.y - startY) > 15f)) {
-                                isLongPressCanceled = true
-                                handler.removeCallbacks(longPressRunnable)
+                                isLongPressCanceled = true; handler.removeCallbacks(longPressRunnable)
                             }
                             networkClient.sendMouseMove(normX, normY)
                         }
                     }
                     2 -> {
-                        // 2-finger scroll (only when not in a pinch)
+                        // 2-finger scroll when NOT in a pinch (RustDesk: threeFingerVerticalDrag / scroll)
                         if (!scaleGestureDetector.isInProgress) {
                             val cy = event.getY(1)
                             if (!isScrollConfirmed) {
                                 if (abs(cy - startScrollY) > 10f) { isScrollConfirmed = true; lastScrollY = cy }
                             } else {
                                 val dy = cy - lastScrollY
-                                if (abs(dy) > 2f) {
-                                    networkClient.sendMouseScroll((dy * 0.8f).toInt())
-                                    lastScrollY = cy
+                                // RustDesk integrator: accumulate dy/4, fire when crosses ±1
+                                scrollIntegral += dy / 4f
+                                if (scrollIntegral > 1f) {
+                                    networkClient.sendMouseScroll((scrollIntegral * 30f).toInt()); scrollIntegral = 0f
+                                } else if (scrollIntegral < -1f) {
+                                    networkClient.sendMouseScroll((scrollIntegral * 30f).toInt()); scrollIntegral = 0f
                                 }
+                                lastScrollY = cy
                             }
                         }
                     }
                     3 -> {
-                        if (!threeFingerTriggered && event.y - threeFingerStartY < -150f) {
+                        if (!threeFingerTriggered && event.y - threeFingerStartY < -120f) {
                             threeFingerTriggered = true
                             networkClient.sendKeyEvent(0x5B, true)
-                            networkClient.sendKeyEvent(0x09, true)
-                            networkClient.sendKeyEvent(0x09, false)
+                            networkClient.sendKeyEvent(0x09, true); networkClient.sendKeyEvent(0x09, false)
                             networkClient.sendKeyEvent(0x5B, false)
                         }
                     }
@@ -243,9 +242,9 @@ class DirectTouchHandler(
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                isLongPressCanceled = true
-                handler.removeCallbacks(longPressRunnable)
+                isLongPressCanceled = true; handler.removeCallbacks(longPressRunnable)
                 if (isHoldDragging) { networkClient.sendMouseButton(1, false); isHoldDragging = false }
+                isPinchActive = false
             }
         }
         return true

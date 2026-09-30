@@ -3,9 +3,11 @@ package com.directlink.client
 import android.app.Activity
 import android.content.Context
 import android.content.pm.ActivityInfo
+import android.graphics.SurfaceTexture
 import android.os.Bundle
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.view.Surface
+import android.view.TextureView
+import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -227,20 +229,40 @@ fun RemoteSessionScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        // --- VIDEO SURFACE ---
+        // --- VIDEO: TextureView + full-screen touch overlay inside a FrameLayout ---
+        // Using a FrameLayout lets us stack the TextureView (video) and a transparent
+        // View (touch overlay) as siblings inside a single AndroidView. The overlay
+        // sits on top and captures all touches. The TextureView gets setTransform(Matrix)
+        // calls for real visual zoom/pan without affecting Compose touch dispatch.
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
-                val surface = SurfaceView(ctx)
-                val touchHandler = DirectTouchHandler(networkClient, surface)
-                surface.setOnTouchListener(touchHandler)
+                val frame = android.widget.FrameLayout(ctx)
 
-                surface.holder.addCallback(object : SurfaceHolder.Callback {
-                    override fun surfaceCreated(holder: SurfaceHolder) {
-                        val decoder = VideoDecoder(holder.surface, 1600, 900) { w, h ->
-                            if (h > 0) {
+                // TextureView for video output
+                val textureView = TextureView(ctx)
+                frame.addView(textureView, android.widget.FrameLayout.LayoutParams(
+                    android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                    android.widget.FrameLayout.LayoutParams.MATCH_PARENT
+                ))
+
+                // Full-screen transparent overlay — receives all touches
+                val overlay = View(ctx)
+                frame.addView(overlay, android.widget.FrameLayout.LayoutParams(
+                    android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                    android.widget.FrameLayout.LayoutParams.MATCH_PARENT
+                ))
+
+                val touchHandler = DirectTouchHandler(networkClient, textureView, overlay)
+                overlay.setOnTouchListener(touchHandler)
+
+                textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                    override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                        val surface = Surface(st)
+                        val decoder = VideoDecoder(surface, 1600, 900) { vw, vh ->
+                            if (vh > 0) {
                                 activity.runOnUiThread {
-                                    videoAspectRatio = w.toFloat() / h.toFloat()
+                                    videoAspectRatio = vw.toFloat() / vh.toFloat()
                                     touchHandler.videoAspectRatio = videoAspectRatio
                                 }
                             }
@@ -249,13 +271,16 @@ fun RemoteSessionScreen(
                         videoDecoder = decoder
                         networkClient.videoFrameCallback = { nalu -> decoder.decodeNalu(nalu) }
                     }
-                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {}
-                    override fun surfaceDestroyed(holder: SurfaceHolder) {
-                        videoDecoder?.stop()
-                        videoDecoder = null
+                    override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+                    override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                        videoDecoder?.stop(); videoDecoder = null
+                        networkClient.videoFrameCallback = null
+                        return true
                     }
-                })
-                surface
+                    override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+                }
+
+                frame
             }
         )
         
