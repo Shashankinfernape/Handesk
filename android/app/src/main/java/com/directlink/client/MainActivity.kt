@@ -255,10 +255,10 @@ fun RemoteSessionScreen(
 
                 val touchHandler = DirectTouchHandler(networkClient, textureView, overlay)
                 
-                touchHandler.onTwoFingerSingleTap = {
+                touchHandler.onTwoFingerSwipeUp = {
                     activity.runOnUiThread { focusRequester.requestFocus() }
                 }
-                touchHandler.onTwoFingerDoubleTap = {
+                touchHandler.onTwoFingerSwipeDown = {
                     activity.runOnUiThread { showToolbar = true }
                 }
 

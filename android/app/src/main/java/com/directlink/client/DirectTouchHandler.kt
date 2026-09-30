@@ -16,10 +16,11 @@ import kotlin.math.hypot
  * GESTURE MAP:
  *   1 finger tap          → left click (no mouse hover trail)
  *   1 finger double-tap   → right click
- *   1 finger drag         → mouse wheel scroll
+ *   1 finger long press   → left button drag (moves mouse while dragging)
  *
- *   2 fingers SINGLE TAP  → keyboard
- *   2 fingers DOUBLE TAP  → toolbar
+ *   2 fingers scroll      → mouse wheel (normal speed)
+ *   2 fingers swipe up    → keyboard (fast flick up)
+ *   2 fingers swipe down  → toolbar (fast flick down)
  *
  *   3 fingers PINCH       → visual zoom in/out + pan
  */
@@ -30,8 +31,8 @@ class DirectTouchHandler(
 ) : View.OnTouchListener {
 
     var videoAspectRatio = 16f / 9f
-    var onTwoFingerSingleTap: (() -> Unit)? = null
-    var onTwoFingerDoubleTap: (() -> Unit)? = null
+    var onTwoFingerSwipeUp: (() -> Unit)? = null
+    var onTwoFingerSwipeDown: (() -> Unit)? = null
 
     // ── Canvas viewport (RustDesk pattern) ───────────────────────────────────
     private var scale = 1f
@@ -91,20 +92,13 @@ class DirectTouchHandler(
             }
         })
 
-    // ── 1-finger scroll ──────────────────────────────────────────────────────
+    // ── 2-finger scroll / swipe ──────────────────────────────────────────────
+    private var scrollStartY = 0f
+    private var scrollStartTime = 0L
     private var scrollLastY  = 0f
+    private var scrollActive = false
     private var scrollIntegral = 0f
-
-    // ── 2-finger tap / double tap ────────────────────────────────────────────
-    private var twoFingerDownTime = 0L
-    private var twoFingerTapCount = 0
-    private var twoFingerIsDragging = false
-    private var scrollStartY = 0f // used just to measure movement during the tap
-    private val twoFingerTapHandler = Handler(Looper.getMainLooper())
-    private val twoFingerSingleTapRunnable = Runnable {
-        onTwoFingerSingleTap?.invoke()
-        twoFingerTapCount = 0
-    }
+    private var twoFingerSwipeTriggered = false
 
     // ── 3-finger zoom + pan ───────────────────────────────────────────────────
     private var threeFingerActive = false
@@ -132,22 +126,30 @@ class DirectTouchHandler(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 scrollLastY = event.y // track for 1-finger scroll
-                threeFingerActive = false
+                
+                // Note: INTENTIONALLY NOT sending mouse move here.
+                // It ensures a pure "touch" interface without hover trails.
+                
+                scrollActive = false; threeFingerActive = false
+                twoFingerSwipeTriggered = false
                 scrollIntegral = 0f
-                // Do not clear twoFingerTapCount here (might be 2nd tap of a double tap)
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
                 when (event.pointerCount) {
                     2 -> {
-                        twoFingerDownTime = System.currentTimeMillis()
-                        twoFingerIsDragging = false
                         scrollStartY = (event.getY(0) + event.getY(1)) / 2f
+                        scrollLastY = scrollStartY
+                        scrollStartTime = System.currentTimeMillis()
+                        scrollActive = false; scrollIntegral = 0f
+                        twoFingerSwipeTriggered = false
                     }
                     3 -> {
+                        scrollActive = false
+                        val (cx, cy) = centroid(event)
+                        lastCentroidX = cx; lastCentroidY = cy
+                        lastRadius    = avgRadius(event, cx, cy)
                         threeFingerActive = true
-                        twoFingerTapHandler.removeCallbacks(twoFingerSingleTapRunnable)
-                        twoFingerTapCount = 0
                     }
                 }
             }
@@ -156,7 +158,7 @@ class DirectTouchHandler(
                 when (event.pointerCount) {
                     1 -> {
                         val cy = event.y
-                        val dy = cy - scrollLastY
+                        val dy = cy - scrollLastY // reusing scrollLastY initialized in ACTION_DOWN
                         scrollIntegral += dy / 3f
                         when {
                             scrollIntegral >  1f -> { networkClient.sendMouseScroll(( scrollIntegral * 25f).toInt()); scrollIntegral = 0f }
@@ -167,9 +169,20 @@ class DirectTouchHandler(
 
                     2 -> {
                         if (!threeFingerActive) {
+                            if (twoFingerSwipeTriggered) return@onTouch true
+                            
                             val cy = (event.getY(0) + event.getY(1)) / 2f
-                            if (abs(cy - scrollStartY) > 20f) {
-                                twoFingerIsDragging = true // Too much movement for a tap
+                            val dy = cy - scrollStartY
+                            val dt = System.currentTimeMillis() - scrollStartTime
+                            
+                            // Since 1-finger handles scroll, 2-finger is purely for UI swipes.
+                            // We don't have to worry about accidentally scrolling.
+                            if (dt < 400 && dy < -50f) {
+                                twoFingerSwipeTriggered = true
+                                onTwoFingerSwipeUp?.invoke()
+                            } else if (dt < 400 && dy > 50f) {
+                                twoFingerSwipeTriggered = true
+                                onTwoFingerSwipeDown?.invoke()
                             }
                         }
                     }
@@ -199,27 +212,17 @@ class DirectTouchHandler(
                 when (event.pointerCount) {
                     3 -> {
                         threeFingerActive = false
+                        scrollActive = false; scrollIntegral = 0f
                     }
                     2 -> {
-                        if (!threeFingerActive && !twoFingerIsDragging) {
-                            val upTime = System.currentTimeMillis()
-                            if (upTime - twoFingerDownTime < 300) {
-                                twoFingerTapCount++
-                                if (twoFingerTapCount == 1) {
-                                    twoFingerTapHandler.postDelayed(twoFingerSingleTapRunnable, 300)
-                                } else if (twoFingerTapCount == 2) {
-                                    twoFingerTapHandler.removeCallbacks(twoFingerSingleTapRunnable)
-                                    onTwoFingerDoubleTap?.invoke()
-                                    twoFingerTapCount = 0
-                                }
-                            }
-                        }
+                        scrollActive = false; scrollIntegral = 0f
                     }
                 }
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                threeFingerActive = false
+                scrollActive = false; threeFingerActive = false
+                twoFingerSwipeTriggered = false
                 scrollIntegral = 0f
             }
         }
