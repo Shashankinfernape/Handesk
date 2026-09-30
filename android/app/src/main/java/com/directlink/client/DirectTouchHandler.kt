@@ -11,23 +11,18 @@ import kotlin.math.abs
 import kotlin.math.hypot
 
 /**
- * DirectTouchHandler — Clean gesture separation.
+ * DirectTouchHandler
  *
- * GESTURE MAP (mutually exclusive, no accidental cross-triggers):
- *   1 finger tap          → left click
+ * GESTURE MAP:
+ *   1 finger tap          → left click (no mouse hover trail)
  *   1 finger double-tap   → right click
- *   1 finger long press   → left button drag
- *   1 finger move         → mouse move / drag
+ *   1 finger long press   → left button drag (moves mouse while dragging)
  *
- *   2 fingers scroll      → mouse wheel (scroll only, NEVER zoom)
- *   2 fingers tap         → right click
+ *   2 fingers scroll      → mouse wheel (normal speed)
+ *   2 fingers swipe up    → keyboard (fast flick up)
+ *   2 fingers swipe down  → toolbar (fast flick down)
  *
- *   3 fingers PINCH       → visual zoom in/out + pan (ONLY way to zoom)
- *   3 fingers swipe-UP    → Win+Tab  (only if no pinch detected in gesture)
- *
- * WHY 3-finger zoom:
- *   Separating scroll (2-finger) from zoom (3-finger) eliminates ALL accidental
- *   zoom triggers while scrolling. User intentionally places 3 fingers to zoom.
+ *   3 fingers PINCH       → visual zoom in/out + pan
  */
 class DirectTouchHandler(
     private val networkClient: NetworkClient,
@@ -36,6 +31,8 @@ class DirectTouchHandler(
 ) : View.OnTouchListener {
 
     var videoAspectRatio = 16f / 9f
+    var onTwoFingerSwipeUp: (() -> Unit)? = null
+    var onTwoFingerSwipeDown: (() -> Unit)? = null
 
     // ── Canvas viewport (RustDesk pattern) ───────────────────────────────────
     private var scale = 1f
@@ -61,10 +58,8 @@ class DirectTouchHandler(
     private fun screenToNorm(sx: Float, sy: Float): Pair<Int, Int> {
         val tw = textureView.width.toFloat().takeIf { it > 0 } ?: 1f
         val th = textureView.height.toFloat().takeIf { it > 0 } ?: 1f
-        // 1. Invert visual transform
         val cx = (sx - panX) / scale
         val cy = (sy - panY) / scale
-        // 2. Black-bar correction
         val viewAR = tw / th
         val vw: Float; val vh: Float; val px: Float; val py: Float
         if (videoAspectRatio > viewAR) {
@@ -83,7 +78,12 @@ class DirectTouchHandler(
     private var startX = 0f; private var startY = 0f
     private var isLongPressCanceled = false
     private val longPressRunnable = Runnable {
-        if (!isLongPressCanceled) { isHoldDragging = true; networkClient.sendMouseButton(1, true) }
+        if (!isLongPressCanceled) { 
+            isHoldDragging = true
+            val (nx, ny) = screenToNorm(startX, startY)
+            networkClient.sendMouseMove(nx, ny)
+            networkClient.sendMouseButton(1, true) 
+        }
     }
 
     // ── Tap / double-tap ─────────────────────────────────────────────────────
@@ -91,33 +91,33 @@ class DirectTouchHandler(
         object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapUp(e: MotionEvent): Boolean {
                 if (e.pointerCount > 1) return false
-                networkClient.sendMouseButton(1, true); networkClient.sendMouseButton(1, false)
+                val (nx, ny) = screenToNorm(e.x, e.y)
+                networkClient.sendMouseMove(nx, ny)
+                networkClient.sendMouseButton(1, true)
+                networkClient.sendMouseButton(1, false)
                 return true
             }
             override fun onDoubleTap(e: MotionEvent): Boolean {
-                networkClient.sendMouseButton(2, true); networkClient.sendMouseButton(2, false)
+                val (nx, ny) = screenToNorm(e.x, e.y)
+                networkClient.sendMouseMove(nx, ny)
+                networkClient.sendMouseButton(2, true)
+                networkClient.sendMouseButton(2, false)
                 return true
             }
         })
 
-    // ── 2-finger scroll (ONLY, no zoom) ──────────────────────────────────────
+    // ── 2-finger scroll / swipe ──────────────────────────────────────────────
     private var scrollStartY = 0f
+    private var scrollStartTime = 0L
     private var scrollLastY  = 0f
     private var scrollActive = false
     private var scrollIntegral = 0f
+    private var twoFingerSwipeTriggered = false
 
     // ── 3-finger zoom + pan ───────────────────────────────────────────────────
-    // We track 3-finger gestures manually to distinguish:
-    //   a) Pinch (spread / close) → zoom
-    //   b) Swipe-up (all fingers move upward) → Win+Tab
-    private var threeFingerActive   = false
-    private var threeFingerPinching = false    // locked once pinch detected
-    private var threeFingerSwiped   = false    // locked once swipe detected
-
-    // Last centroid and average radius for 3-finger math
+    private var threeFingerActive = false
     private var lastCentroidX = 0f;  private var lastCentroidY = 0f
     private var lastRadius    = 0f
-    private var startCentroidY = 0f  // used for swipe detection
 
     private fun centroid(event: MotionEvent): Pair<Float, Float> {
         var x = 0f; var y = 0f
@@ -135,23 +135,20 @@ class DirectTouchHandler(
 
     // ─────────────────────────────────────────────────────────────────────────
     override fun onTouch(v: View, event: MotionEvent): Boolean {
-        // Feed 1-finger gestures to standard detector (tap / double-tap)
         if (event.pointerCount == 1) gestureDetector.onTouchEvent(event)
 
-        val (normX, normY) = screenToNorm(event.x, event.y)
-
         when (event.actionMasked) {
-
-            // ── FINGER DOWN ──────────────────────────────────────────────────
             MotionEvent.ACTION_DOWN -> {
                 startX = event.x; startY = event.y
                 isLongPressCanceled = false
                 handler.removeCallbacks(longPressRunnable)
                 handler.postDelayed(longPressRunnable, 700)
-                networkClient.sendMouseMove(normX, normY)
-                // Reset all multi-finger state
+                
+                // Note: INTENTIONALLY NOT sending mouse move here.
+                // It ensures a pure "touch" interface without hover trails.
+                
                 scrollActive = false; threeFingerActive = false
-                threeFingerPinching = false; threeFingerSwiped = false
+                twoFingerSwipeTriggered = false
                 scrollIntegral = 0f
             }
 
@@ -161,24 +158,22 @@ class DirectTouchHandler(
 
                 when (event.pointerCount) {
                     2 -> {
-                        // 2-finger: prepare scroll
                         scrollStartY = (event.getY(0) + event.getY(1)) / 2f
-                        scrollLastY  = scrollStartY
+                        scrollLastY = scrollStartY
+                        scrollStartTime = System.currentTimeMillis()
                         scrollActive = false; scrollIntegral = 0f
+                        twoFingerSwipeTriggered = false
                     }
                     3 -> {
-                        // 3-finger: prepare zoom/swipe — cancel any 2-finger scroll
                         scrollActive = false
                         val (cx, cy) = centroid(event)
                         lastCentroidX = cx; lastCentroidY = cy
                         lastRadius    = avgRadius(event, cx, cy)
-                        startCentroidY = cy
-                        threeFingerActive = true; threeFingerPinching = false; threeFingerSwiped = false
+                        threeFingerActive = true
                     }
                 }
             }
 
-            // ── FINGER MOVE ───────────────────────────────────────────────────
             MotionEvent.ACTION_MOVE -> {
                 when (event.pointerCount) {
                     1 -> {
@@ -186,20 +181,37 @@ class DirectTouchHandler(
                             (abs(event.x - startX) > 15f || abs(event.y - startY) > 15f)) {
                             isLongPressCanceled = true; handler.removeCallbacks(longPressRunnable)
                         }
-                        networkClient.sendMouseMove(normX, normY)
+                        // Only send mouse move if we are actually dragging a window/icon
+                        if (isHoldDragging) {
+                            val (nx, ny) = screenToNorm(event.x, event.y)
+                            networkClient.sendMouseMove(nx, ny)
+                        }
                     }
 
                     2 -> {
                         if (!threeFingerActive) {
+                            if (twoFingerSwipeTriggered) return@onTouch true
+                            
                             val cy = (event.getY(0) + event.getY(1)) / 2f
+                            val dy = cy - scrollStartY
+                            val dt = System.currentTimeMillis() - scrollStartTime
+                            
                             if (!scrollActive) {
-                                if (abs(cy - scrollStartY) > 8f) {
-                                    scrollActive = true; scrollLastY = cy
+                                // Smooth swipe detection: > 60px within 350ms is a clear UI flick
+                                if (dt < 350 && dy < -60f) {
+                                    twoFingerSwipeTriggered = true
+                                    onTwoFingerSwipeUp?.invoke()
+                                } else if (dt < 350 && dy > 60f) {
+                                    twoFingerSwipeTriggered = true
+                                    onTwoFingerSwipeDown?.invoke()
+                                } else if (abs(dy) > 20f && dt >= 150) {
+                                    // Slower/sustained movement -> lock into scroll mode
+                                    scrollActive = true
+                                    scrollLastY = cy
                                 }
                             } else {
-                                val dy = cy - scrollLastY
-                                // Integrator: accumulate, fire on ±threshold
-                                scrollIntegral += dy / 3f
+                                val scrollDy = cy - scrollLastY
+                                scrollIntegral += scrollDy / 3f
                                 when {
                                     scrollIntegral >  1f -> { networkClient.sendMouseScroll(( scrollIntegral * 25f).toInt()); scrollIntegral = 0f }
                                     scrollIntegral < -1f -> { networkClient.sendMouseScroll((scrollIntegral * 25f).toInt()); scrollIntegral = 0f }
@@ -213,51 +225,27 @@ class DirectTouchHandler(
                         if (!threeFingerActive) return@onTouch true
                         val (cx, cy) = centroid(event)
                         val radius   = avgRadius(event, cx, cy)
+                        val radiusRatio = if (lastRadius > 0f) radius / lastRadius else 1f
 
-                        val radiusRatio  = if (lastRadius > 0f) radius / lastRadius else 1f
-                        val centroidDy   = cy - lastCentroidY
-                        val totalSwipeY  = cy - startCentroidY
-
-                        // --- Distinguish: swipe-up vs pinch ---
-                        // Rule: if centroid moves > 80px upward AND radius hasn't changed > 12%, it's a swipe
-                        // Rule: if radius changes > 5% (spread/close), it's a pinch
-                        if (!threeFingerSwiped && !threeFingerPinching) {
-                            if (abs(radiusRatio - 1f) > 0.05f) {
-                                threeFingerPinching = true    // lock into zoom mode
-                            } else if (totalSwipeY < -80f) {
-                                threeFingerSwiped = true      // lock into swipe mode
-                                networkClient.sendKeyEvent(0x5B, true)
-                                networkClient.sendKeyEvent(0x09, true)
-                                networkClient.sendKeyEvent(0x09, false)
-                                networkClient.sendKeyEvent(0x5B, false)
-                            }
-                        }
-
-                        if (threeFingerPinching) {
-                            // Zoom centered on the 3-finger centroid (RustDesk formula)
-                            val factor = radiusRatio.coerceIn(0.85f, 1.18f)
-                            val newScale = (scale * factor).coerceIn(1f, 8f)
-                            val ratio = newScale / scale
-                            panX = cx - (cx - panX) * ratio
-                            panY = cy - (cy - panY) * ratio
-                            // Pan with centroid movement
-                            panX += cx - lastCentroidX
-                            panY += cy - lastCentroidY
-                            scale = newScale
-                            applyTransform()
-                        }
+                        val factor = radiusRatio.coerceIn(0.85f, 1.18f)
+                        val newScale = (scale * factor).coerceIn(1f, 8f)
+                        val ratio = newScale / scale
+                        panX = cx - (cx - panX) * ratio
+                        panY = cy - (cy - panY) * ratio
+                        panX += cx - lastCentroidX
+                        panY += cy - lastCentroidY
+                        scale = newScale
+                        applyTransform()
 
                         lastCentroidX = cx; lastCentroidY = cy; lastRadius = radius
                     }
                 }
             }
 
-            // ── FINGER UP ─────────────────────────────────────────────────────
             MotionEvent.ACTION_POINTER_UP -> {
                 when (event.pointerCount) {
                     3 -> {
-                        // One 3-finger left → back to 2-finger scroll state
-                        threeFingerActive = false; threeFingerPinching = false
+                        threeFingerActive = false
                         scrollActive = false; scrollIntegral = 0f
                     }
                     2 -> {
@@ -270,7 +258,7 @@ class DirectTouchHandler(
                 isLongPressCanceled = true; handler.removeCallbacks(longPressRunnable)
                 if (isHoldDragging) { networkClient.sendMouseButton(1, false); isHoldDragging = false }
                 scrollActive = false; threeFingerActive = false
-                threeFingerPinching = false; threeFingerSwiped = false
+                twoFingerSwipeTriggered = false
                 scrollIntegral = 0f
             }
         }
