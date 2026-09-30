@@ -3,106 +3,81 @@ package com.directlink.client
 import android.graphics.Matrix
 import android.view.GestureDetector
 import android.view.MotionEvent
-import android.view.ScaleGestureDetector
 import android.view.TextureView
 import android.view.View
 import android.os.Handler
 import android.os.Looper
 import kotlin.math.abs
+import kotlin.math.hypot
 
 /**
- * DirectTouchHandler — TextureView + RustDesk-style implementation.
+ * DirectTouchHandler — Clean gesture separation.
  *
- * ARCHITECTURE:
- * - TextureView (not SurfaceView) allows setTransform(Matrix) for REAL VISUAL zoom/pan.
- * - This touch handler is set on a FULL-SCREEN transparent overlay view, NOT on the
- *   TextureView itself. This ensures touches are captured everywhere on screen, including
- *   in the zoomed-out areas when the image is panned.
- * - Coordinate mapping uses the INVERSE of the visual transform matrix (exact RustDesk pattern).
- *
- * VISUAL ZOOM FORMULA (applied to TextureView):
- *   Matrix m; m.setScale(scale, scale); m.postTranslate(panX, panY)
- *   → Content pixel at (cx, cy) appears at screen pixel (cx*scale + panX, cy*scale + panY)
- *
- * TOUCH INVERSE FORMULA (touch → remote):
- *   contentX = (screenX - panX) / scale    (RustDesk: x -= canvas.x; x /= canvas.scale)
- *   contentY = (screenY - panY) / scale
- *   Then subtract black-bar padding and normalize to [0..65535]
- *
- * GESTURES:
+ * GESTURE MAP (mutually exclusive, no accidental cross-triggers):
  *   1 finger tap          → left click
  *   1 finger double-tap   → right click
- *   1 finger long-hold    → left button drag
- *   1 finger move         → mouse move
- *   2 finger pinch        → visual zoom in/out (centered on fingers)
- *   2 finger pan          → pan the zoomed view (move camera)
- *   2 finger scroll       → mouse wheel (when NOT pinching)
- *   3 finger swipe-up     → Win+Tab (Task View)
+ *   1 finger long press   → left button drag
+ *   1 finger move         → mouse move / drag
+ *
+ *   2 fingers scroll      → mouse wheel (scroll only, NEVER zoom)
+ *   2 fingers tap         → right click
+ *
+ *   3 fingers PINCH       → visual zoom in/out + pan (ONLY way to zoom)
+ *   3 fingers swipe-UP    → Win+Tab  (only if no pinch detected in gesture)
+ *
+ * WHY 3-finger zoom:
+ *   Separating scroll (2-finger) from zoom (3-finger) eliminates ALL accidental
+ *   zoom triggers while scrolling. User intentionally places 3 fingers to zoom.
  */
 class DirectTouchHandler(
     private val networkClient: NetworkClient,
     private val textureView: TextureView,
-    private val overlayView: View   // The full-screen transparent view that captures touches
+    private val overlayView: View
 ) : View.OnTouchListener {
 
-    /** Updated from VideoDecoder callback with the real decoded video dimensions. */
     var videoAspectRatio = 16f / 9f
 
-    // ── RustDesk-style canvas viewport state ─────────────────────────────────
+    // ── Canvas viewport (RustDesk pattern) ───────────────────────────────────
     private var scale = 1f
-    private var panX = 0f
-    private var panY = 0f
+    private var panX  = 0f
+    private var panY  = 0f
 
-    /** Apply the current zoom/pan as a Matrix transform on the TextureView. */
     private fun applyTransform() {
         if (scale <= 1.001f) {
             scale = 1f; panX = 0f; panY = 0f
             textureView.post { textureView.setTransform(null) }
             return
         }
-        // Clamp pan so the image doesn't float off-screen
         val tw = textureView.width.toFloat()
         val th = textureView.height.toFloat()
         panX = panX.coerceIn(tw * (1f - scale), 0f)
         panY = panY.coerceIn(th * (1f - scale), 0f)
-
         val m = Matrix()
         m.setScale(scale, scale)
         m.postTranslate(panX, panY)
         textureView.post { textureView.setTransform(m) }
     }
 
-    /** Map a screen pixel (relative to overlay top-left) → normalised remote coord [0..65535].
-     *  Applies inverse-transform then black-bar correction. Mirrors RustDesk input_model.dart. */
     private fun screenToNorm(sx: Float, sy: Float): Pair<Int, Int> {
-        val tw = textureView.width.toFloat()
-        val th = textureView.height.toFloat()
-
-        // 1. Invert the visual zoom/pan transform (RustDesk: x -= canvas.x; x /= canvas.scale)
-        val contentX = (sx - panX) / scale
-        val contentY = (sy - panY) / scale
-
-        // 2. Black-bar correction (video may be letterboxed/pillarboxed inside the TextureView)
-        val viewAR = if (th > 0f) tw / th else 16f / 9f
-        val videoW: Float; val videoH: Float; val padX: Float; val padY: Float
+        val tw = textureView.width.toFloat().takeIf { it > 0 } ?: 1f
+        val th = textureView.height.toFloat().takeIf { it > 0 } ?: 1f
+        // 1. Invert visual transform
+        val cx = (sx - panX) / scale
+        val cy = (sy - panY) / scale
+        // 2. Black-bar correction
+        val viewAR = tw / th
+        val vw: Float; val vh: Float; val px: Float; val py: Float
         if (videoAspectRatio > viewAR) {
-            videoW = tw; videoH = tw / videoAspectRatio
-            padX = 0f;  padY = (th - videoH) / 2f
+            vw = tw; vh = tw / videoAspectRatio; px = 0f; py = (th - vh) / 2f
         } else {
-            videoH = th; videoW = th * videoAspectRatio
-            padX = (tw - videoW) / 2f; padY = 0f
+            vh = th; vw = th * videoAspectRatio; px = (tw - vw) / 2f; py = 0f
         }
-
-        val videoLocalX = contentX - padX
-        val videoLocalY = contentY - padY
-
-        // 3. Normalise to [0..65535] and clamp (RustDesk: tryGetNearestRange with 5px snap)
-        val normX = ((videoLocalX / videoW) * 65535f).toInt().coerceIn(0, 65535)
-        val normY = ((videoLocalY / videoH) * 65535f).toInt().coerceIn(0, 65535)
-        return Pair(normX, normY)
+        val nx = (((cx - px) / vw) * 65535f).toInt().coerceIn(0, 65535)
+        val ny = (((cy - py) / vh) * 65535f).toInt().coerceIn(0, 65535)
+        return Pair(nx, ny)
     }
 
-    // ── Long-press drag ──────────────────────────────────────────────────────
+    // ── Long-press drag ───────────────────────────────────────────────────────
     private var isHoldDragging = false
     private val handler = Handler(Looper.getMainLooper())
     private var startX = 0f; private var startY = 0f
@@ -115,6 +90,7 @@ class DirectTouchHandler(
     private val gestureDetector = GestureDetector(overlayView.context,
         object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapUp(e: MotionEvent): Boolean {
+                if (e.pointerCount > 1) return false
                 networkClient.sendMouseButton(1, true); networkClient.sendMouseButton(1, false)
                 return true
             }
@@ -124,119 +100,168 @@ class DirectTouchHandler(
             }
         })
 
-    // ── Pinch zoom + 2-finger pan ─────────────────────────────────────────────
-    private var isPinchActive = false
-    private var isScrollConfirmed = false
-    private var lastFocusX = 0f; private var lastFocusY = 0f
-    // Accumulated absolute scale factor (RustDesk pattern: _scale field, ratio = d.scale / _scale)
-    private var pinchStartScale = 1f
-
-    private val scaleGestureDetector = ScaleGestureDetector(overlayView.context,
-        object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-            override fun onScaleBegin(d: ScaleGestureDetector): Boolean {
-                isPinchActive = true
-                pinchStartScale = scale   // capture canvas scale at gesture start
-                lastFocusX = d.focusX; lastFocusY = d.focusY
-                return true
-            }
-
-            override fun onScale(d: ScaleGestureDetector): Boolean {
-                val focalX = d.focusX; val focalY = d.focusY
-                val factor = d.scaleFactor.coerceIn(0.8f, 1.25f) // clamp per-frame change
-
-                val newScale = (scale * factor).coerceIn(1f, 8f)
-                val ratio = newScale / scale
-
-                // RustDesk formula: _x = focalPoint.dx - (focalPoint.dx - _x) / s * _scale
-                panX = focalX - (focalX - panX) * ratio
-                panY = focalY - (focalY - panY) * ratio
-
-                // 2-finger pan delta (RustDesk: panX/panY(focalPointDelta))
-                panX += focalX - lastFocusX
-                panY += focalY - lastFocusY
-
-                scale = newScale
-                lastFocusX = focalX; lastFocusY = focalY
-
-                applyTransform()
-                return true
-            }
-
-            override fun onScaleEnd(d: ScaleGestureDetector) { isPinchActive = false }
-        })
-
-    // ── 2-finger scroll (mouse wheel) ─────────────────────────────────────────
-    private var startScrollY = 0f; private var lastScrollY = 0f
-    // Integrator (RustDesk: _mouseScrollIntegral += delta / 4; send when crosses ±1)
+    // ── 2-finger scroll (ONLY, no zoom) ──────────────────────────────────────
+    private var scrollStartY = 0f
+    private var scrollLastY  = 0f
+    private var scrollActive = false
     private var scrollIntegral = 0f
 
-    // ── 3-finger swipe-up → Win+Tab ─────────────────────────────────────────
-    private var threeFingerStartY = 0f; private var threeFingerTriggered = false
+    // ── 3-finger zoom + pan ───────────────────────────────────────────────────
+    // We track 3-finger gestures manually to distinguish:
+    //   a) Pinch (spread / close) → zoom
+    //   b) Swipe-up (all fingers move upward) → Win+Tab
+    private var threeFingerActive   = false
+    private var threeFingerPinching = false    // locked once pinch detected
+    private var threeFingerSwiped   = false    // locked once swipe detected
+
+    // Last centroid and average radius for 3-finger math
+    private var lastCentroidX = 0f;  private var lastCentroidY = 0f
+    private var lastRadius    = 0f
+    private var startCentroidY = 0f  // used for swipe detection
+
+    private fun centroid(event: MotionEvent): Pair<Float, Float> {
+        var x = 0f; var y = 0f
+        for (i in 0 until event.pointerCount) { x += event.getX(i); y += event.getY(i) }
+        return Pair(x / event.pointerCount, y / event.pointerCount)
+    }
+
+    private fun avgRadius(event: MotionEvent, cx: Float, cy: Float): Float {
+        var r = 0f
+        for (i in 0 until event.pointerCount) {
+            r += hypot(event.getX(i) - cx, event.getY(i) - cy)
+        }
+        return r / event.pointerCount
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     override fun onTouch(v: View, event: MotionEvent): Boolean {
-        gestureDetector.onTouchEvent(event)
-        scaleGestureDetector.onTouchEvent(event)
+        // Feed 1-finger gestures to standard detector (tap / double-tap)
+        if (event.pointerCount == 1) gestureDetector.onTouchEvent(event)
 
         val (normX, normY) = screenToNorm(event.x, event.y)
 
         when (event.actionMasked) {
+
+            // ── FINGER DOWN ──────────────────────────────────────────────────
             MotionEvent.ACTION_DOWN -> {
-                networkClient.sendMouseMove(normX, normY)
                 startX = event.x; startY = event.y
-                isLongPressCanceled = false; threeFingerTriggered = false
+                isLongPressCanceled = false
                 handler.removeCallbacks(longPressRunnable)
                 handler.postDelayed(longPressRunnable, 700)
+                networkClient.sendMouseMove(normX, normY)
+                // Reset all multi-finger state
+                scrollActive = false; threeFingerActive = false
+                threeFingerPinching = false; threeFingerSwiped = false
+                scrollIntegral = 0f
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
                 isLongPressCanceled = true; handler.removeCallbacks(longPressRunnable)
+                if (isHoldDragging) { networkClient.sendMouseButton(1, false); isHoldDragging = false }
+
                 when (event.pointerCount) {
                     2 -> {
-                        startScrollY = event.getY(1); lastScrollY = event.getY(1)
-                        isScrollConfirmed = false; scrollIntegral = 0f
+                        // 2-finger: prepare scroll
+                        scrollStartY = (event.getY(0) + event.getY(1)) / 2f
+                        scrollLastY  = scrollStartY
+                        scrollActive = false; scrollIntegral = 0f
                     }
-                    3 -> { threeFingerStartY = event.y; threeFingerTriggered = false }
+                    3 -> {
+                        // 3-finger: prepare zoom/swipe — cancel any 2-finger scroll
+                        scrollActive = false
+                        val (cx, cy) = centroid(event)
+                        lastCentroidX = cx; lastCentroidY = cy
+                        lastRadius    = avgRadius(event, cx, cy)
+                        startCentroidY = cy
+                        threeFingerActive = true; threeFingerPinching = false; threeFingerSwiped = false
+                    }
                 }
             }
 
+            // ── FINGER MOVE ───────────────────────────────────────────────────
             MotionEvent.ACTION_MOVE -> {
                 when (event.pointerCount) {
                     1 -> {
-                        if (!isPinchActive) {
-                            if (!isLongPressCanceled &&
-                                (abs(event.x - startX) > 15f || abs(event.y - startY) > 15f)) {
-                                isLongPressCanceled = true; handler.removeCallbacks(longPressRunnable)
-                            }
-                            networkClient.sendMouseMove(normX, normY)
+                        if (!isLongPressCanceled &&
+                            (abs(event.x - startX) > 15f || abs(event.y - startY) > 15f)) {
+                            isLongPressCanceled = true; handler.removeCallbacks(longPressRunnable)
                         }
+                        networkClient.sendMouseMove(normX, normY)
+                    }
+
+                    2 -> {
+                        if (!threeFingerActive) {
+                            val cy = (event.getY(0) + event.getY(1)) / 2f
+                            if (!scrollActive) {
+                                if (abs(cy - scrollStartY) > 8f) {
+                                    scrollActive = true; scrollLastY = cy
+                                }
+                            } else {
+                                val dy = cy - scrollLastY
+                                // Integrator: accumulate, fire on ±threshold
+                                scrollIntegral += dy / 3f
+                                when {
+                                    scrollIntegral >  1f -> { networkClient.sendMouseScroll(( scrollIntegral * 25f).toInt()); scrollIntegral = 0f }
+                                    scrollIntegral < -1f -> { networkClient.sendMouseScroll((scrollIntegral * 25f).toInt()); scrollIntegral = 0f }
+                                }
+                                scrollLastY = cy
+                            }
+                        }
+                    }
+
+                    3 -> {
+                        if (!threeFingerActive) return@onTouch true
+                        val (cx, cy) = centroid(event)
+                        val radius   = avgRadius(event, cx, cy)
+
+                        val radiusRatio  = if (lastRadius > 0f) radius / lastRadius else 1f
+                        val centroidDy   = cy - lastCentroidY
+                        val totalSwipeY  = cy - startCentroidY
+
+                        // --- Distinguish: swipe-up vs pinch ---
+                        // Rule: if centroid moves > 80px upward AND radius hasn't changed > 12%, it's a swipe
+                        // Rule: if radius changes > 5% (spread/close), it's a pinch
+                        if (!threeFingerSwiped && !threeFingerPinching) {
+                            if (abs(radiusRatio - 1f) > 0.05f) {
+                                threeFingerPinching = true    // lock into zoom mode
+                            } else if (totalSwipeY < -80f) {
+                                threeFingerSwiped = true      // lock into swipe mode
+                                networkClient.sendKeyEvent(0x5B, true)
+                                networkClient.sendKeyEvent(0x09, true)
+                                networkClient.sendKeyEvent(0x09, false)
+                                networkClient.sendKeyEvent(0x5B, false)
+                            }
+                        }
+
+                        if (threeFingerPinching) {
+                            // Zoom centered on the 3-finger centroid (RustDesk formula)
+                            val factor = radiusRatio.coerceIn(0.85f, 1.18f)
+                            val newScale = (scale * factor).coerceIn(1f, 8f)
+                            val ratio = newScale / scale
+                            panX = cx - (cx - panX) * ratio
+                            panY = cy - (cy - panY) * ratio
+                            // Pan with centroid movement
+                            panX += cx - lastCentroidX
+                            panY += cy - lastCentroidY
+                            scale = newScale
+                            applyTransform()
+                        }
+
+                        lastCentroidX = cx; lastCentroidY = cy; lastRadius = radius
+                    }
+                }
+            }
+
+            // ── FINGER UP ─────────────────────────────────────────────────────
+            MotionEvent.ACTION_POINTER_UP -> {
+                when (event.pointerCount) {
+                    3 -> {
+                        // One 3-finger left → back to 2-finger scroll state
+                        threeFingerActive = false; threeFingerPinching = false
+                        scrollActive = false; scrollIntegral = 0f
                     }
                     2 -> {
-                        // 2-finger scroll when NOT in a pinch (RustDesk: threeFingerVerticalDrag / scroll)
-                        if (!scaleGestureDetector.isInProgress) {
-                            val cy = event.getY(1)
-                            if (!isScrollConfirmed) {
-                                if (abs(cy - startScrollY) > 10f) { isScrollConfirmed = true; lastScrollY = cy }
-                            } else {
-                                val dy = cy - lastScrollY
-                                // RustDesk integrator: accumulate dy/4, fire when crosses ±1
-                                scrollIntegral += dy / 4f
-                                if (scrollIntegral > 1f) {
-                                    networkClient.sendMouseScroll((scrollIntegral * 30f).toInt()); scrollIntegral = 0f
-                                } else if (scrollIntegral < -1f) {
-                                    networkClient.sendMouseScroll((scrollIntegral * 30f).toInt()); scrollIntegral = 0f
-                                }
-                                lastScrollY = cy
-                            }
-                        }
-                    }
-                    3 -> {
-                        if (!threeFingerTriggered && event.y - threeFingerStartY < -120f) {
-                            threeFingerTriggered = true
-                            networkClient.sendKeyEvent(0x5B, true)
-                            networkClient.sendKeyEvent(0x09, true); networkClient.sendKeyEvent(0x09, false)
-                            networkClient.sendKeyEvent(0x5B, false)
-                        }
+                        scrollActive = false; scrollIntegral = 0f
                     }
                 }
             }
@@ -244,7 +269,9 @@ class DirectTouchHandler(
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 isLongPressCanceled = true; handler.removeCallbacks(longPressRunnable)
                 if (isHoldDragging) { networkClient.sendMouseButton(1, false); isHoldDragging = false }
-                isPinchActive = false
+                scrollActive = false; threeFingerActive = false
+                threeFingerPinching = false; threeFingerSwiped = false
+                scrollIntegral = 0f
             }
         }
         return true
