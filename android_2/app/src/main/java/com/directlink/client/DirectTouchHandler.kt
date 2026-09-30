@@ -14,7 +14,8 @@ class DirectTouchHandler(
     private val view: View
 ) : View.OnTouchListener {
 
-    var onSetKeyboard: ((Boolean) -> Unit)? = null
+    var onTwoFingerSingleTap: (() -> Unit)? = null
+    var onTwoFingerDoubleTap: (() -> Unit)? = null
 
     private var isHoldDragging = false
     private var isDoubleTapPending = false
@@ -32,12 +33,24 @@ class DirectTouchHandler(
         }
     }
 
+    private var viewportScale = 1f
+    private var viewportOffsetX = 0f
+    private var viewportOffsetY = 0f
+
+    fun updateTransform(scale: Float, offsetX: Float, offsetY: Float) {
+        viewportScale = scale
+        viewportOffsetX = offsetX
+        viewportOffsetY = offsetY
+    }
+
     private fun getNormX(x: Float): Int {
-        return ((x / view.width) * 65535).toInt().coerceIn(0, 65535)
+        val realX = (x - viewportOffsetX) / viewportScale
+        return ((realX / view.width) * 65535).toInt().coerceIn(0, 65535)
     }
 
     private fun getNormY(y: Float): Int {
-        return ((y / view.height) * 65535).toInt().coerceIn(0, 65535)
+        val realY = (y - viewportOffsetY) / viewportScale
+        return ((realY / view.height) * 65535).toInt().coerceIn(0, 65535)
     }
 
     private val gestureDetector = GestureDetector(view.context, object : GestureDetector.SimpleOnGestureListener() {
@@ -98,6 +111,31 @@ class DirectTouchHandler(
         }
     })
 
+    // --- Foolproof Gesture Lifecycle ---
+    private var gestureStartTime = 0L
+    private var maxPointers = 0
+    private var gestureStartX = 0f
+    private var gestureStartY = 0f
+    private var gestureMaxMove = 0f
+
+    private var twoFingerTapCount = 0
+    private val tapHandler = Handler(Looper.getMainLooper())
+    private val twoFingerSingleTapRunnable = Runnable {
+        onTwoFingerSingleTap?.invoke()
+        twoFingerTapCount = 0
+    }
+
+    private fun handleTwoFingerTap() {
+        twoFingerTapCount++
+        if (twoFingerTapCount == 1) {
+            tapHandler.postDelayed(twoFingerSingleTapRunnable, 400)
+        } else if (twoFingerTapCount == 2) {
+            tapHandler.removeCallbacks(twoFingerSingleTapRunnable)
+            onTwoFingerDoubleTap?.invoke()
+            twoFingerTapCount = 0
+        }
+    }
+
     // Custom 2-Finger State Machine 
     private var twoFingerState = 0 
     private var startFingerDist = 0f
@@ -121,9 +159,6 @@ class DirectTouchHandler(
         return (e.getY(0) + e.getY(1)) / 2f
     }
 
-    private var threeFingerStartY = 0f
-    private var hasTriggeredThreeFinger = false
-
     override fun onTouch(v: View, event: MotionEvent): Boolean {
         gestureDetector.onTouchEvent(event)
 
@@ -133,39 +168,50 @@ class DirectTouchHandler(
                 val dx = event.x - doubleTapStartX
                 val dy = event.y - doubleTapStartY
                 if (sqrt(dx * dx + dy * dy) > touchSlop) {
-                    // User moved their finger past the deadzone before the 200ms timer!
-                    // It's officially a Drag/Hold. Lock it in.
                     handler.removeCallbacks(holdDragRunnable)
                     isDoubleTapPending = false
                     isHoldDragging = true
-                    networkClient.sendMouseButton(1, true) // Send exactly ONE Left Click Down
+                    networkClient.sendMouseButton(1, true)
                 }
             }
-            
             if (isHoldDragging) {
                 networkClient.sendMouseMove(getNormX(event.x), getNormY(event.y))
             }
         }
 
-        // Custom 2-Finger and 3-Finger Logic
+        // Custom 2-Finger Logic
         when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                gestureStartTime = System.currentTimeMillis()
+                maxPointers = 1
+                gestureMaxMove = 0f
+            }
+
             MotionEvent.ACTION_POINTER_DOWN -> {
+                if (event.pointerCount > maxPointers) {
+                    maxPointers = event.pointerCount
+                }
                 if (event.pointerCount == 2) {
                     twoFingerState = 0
                     startFingerDist = getDistance(event)
                     startCenterX = getCenterX(event)
                     startCenterY = getCenterY(event)
-                } else if (event.pointerCount == 3) {
-                    threeFingerStartY = event.y
-                    hasTriggeredThreeFinger = false
+                    
+                    gestureStartX = startCenterX
+                    gestureStartY = startCenterY
                 }
             }
             
             MotionEvent.ACTION_MOVE -> {
-                if (event.pointerCount == 2) {
+                if (event.pointerCount == 2 && maxPointers == 2) {
                     val currentDist = getDistance(event)
                     val currentCenterX = getCenterX(event)
                     val currentCenterY = getCenterY(event)
+
+                    val cx = currentCenterX
+                    val cy = currentCenterY
+                    val dist = hypot(cx - gestureStartX, cy - gestureStartY)
+                    if (dist > gestureMaxMove) gestureMaxMove = dist
 
                     if (twoFingerState == 0) {
                         val diffDist = abs(currentDist - startFingerDist)
@@ -184,8 +230,6 @@ class DirectTouchHandler(
                         networkClient.sendMouseMove(getNormX(currentCenterX), getNormY(currentCenterY))
                     } else if (twoFingerState == 2) { // Zooming
                         val scale = currentDist / startFingerDist
-                        // Use a much smaller threshold (1.02) and smaller scroll ticks (15) 
-                        // so it feels like smooth, incremental 1-by-1 percentages in browsers.
                         if (scale > 1.02f) {
                             networkClient.sendMouseScroll(15)
                             startFingerDist = currentDist
@@ -193,15 +237,6 @@ class DirectTouchHandler(
                             networkClient.sendMouseScroll(-15)
                             startFingerDist = currentDist
                         }
-                    }
-                } else if (event.pointerCount == 3 && !hasTriggeredThreeFinger) {
-                    val diff = event.y - threeFingerStartY
-                    if (diff < -80f) {
-                        onSetKeyboard?.invoke(true)
-                        hasTriggeredThreeFinger = true
-                    } else if (diff > 80f) {
-                        onSetKeyboard?.invoke(false)
-                        hasTriggeredThreeFinger = true
                     }
                 }
             }
@@ -216,24 +251,24 @@ class DirectTouchHandler(
                     twoFingerState = 0
                 }
                 
+                if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                    val duration = System.currentTimeMillis() - gestureStartTime
+                    if (maxPointers == 2 && duration < 600 && gestureMaxMove < 200f) {
+                        handleTwoFingerTap()
+                    }
+                }
+                
                 if (event.pointerCount <= 1 && event.actionMasked != MotionEvent.ACTION_POINTER_UP) {
                     if (isDoubleTapPending) {
-                        // User lifted finger without dragging! It's a quick Double Tap!
                         handler.removeCallbacks(holdDragRunnable)
                         isDoubleTapPending = false
-                        
-                        // Send a flawless, instantaneous Double Click to the PC
                         networkClient.sendMouseButton(1, true)
                         networkClient.sendMouseButton(1, false)
-                        
-                        // Small delay to ensure Windows registers it as two separate clicks
                         handler.postDelayed({
                             networkClient.sendMouseButton(1, true)
                             networkClient.sendMouseButton(1, false)
                         }, 25)
-                        
                     } else if (isHoldDragging) {
-                        // User lifted finger after a drag
                         networkClient.sendMouseButton(1, false)
                         isHoldDragging = false
                     }

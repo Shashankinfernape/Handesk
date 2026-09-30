@@ -12,6 +12,8 @@ import androidx.activity.compose.setContent
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -28,10 +30,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.*
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlin.math.abs
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -315,7 +322,7 @@ fun RecentTab(activity: Activity, onConnect: (String) -> Unit) {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(history) { ip ->
                     Card(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().clickable { onConnect(ip) },
                         colors = CardDefaults.cardColors(containerColor = SurfaceDark),
                         shape = RoundedCornerShape(12.dp)
                     ) {
@@ -415,6 +422,7 @@ fun RemoteSessionScreen(
     
     val focusRequester = remember { FocusRequester() }
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     
     // --- KEYBOARD & ORIENTATION STATE ---
     var isKeyboardActive by remember { mutableStateOf(false) }
@@ -422,6 +430,11 @@ fun RemoteSessionScreen(
     var isLandscape by remember { mutableStateOf(true) }
     val activeModifiers = remember { mutableStateListOf<Int>() }
     var textBuffer by remember { mutableStateOf("") }
+    
+    val viewportScale = remember { androidx.compose.animation.core.Animatable(1f) }
+    val viewportOffsetX = remember { androidx.compose.animation.core.Animatable(0f) }
+    val viewportOffsetY = remember { androidx.compose.animation.core.Animatable(0f) }
+    val coroutineScope = rememberCoroutineScope()
     
     fun releaseAllRemoteKeys() {
         activeModifiers.forEach { networkClient.sendKeyEvent(it, false) }
@@ -521,16 +534,113 @@ fun RemoteSessionScreen(
 
     Column(modifier = Modifier.fillMaxSize().background(Color.Black).imePadding()) {
         
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+        Box(modifier = Modifier
+            .weight(1f)
+            .fillMaxWidth()
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    var isTransforming = false
+                    var startCentroid = Offset.Zero
+                    var lastCentroid = Offset.Zero
+                    var lastSpan = 0f
+                    var startTime = 0L
+
+                    do {
+                        val event = awaitPointerEvent()
+                        if (event.changes.size == 3) {
+                            event.changes.forEach { it.consume() } // Isolate from AndroidView
+                            
+                            var cx = 0f; var cy = 0f
+                            event.changes.forEach { cx += it.position.x; cy += it.position.y }
+                            val centroid = Offset(cx / 3f, cy / 3f)
+                            
+                            var span = 0f
+                            event.changes.forEach { span += (it.position - centroid).getDistance() }
+                            span /= 3f
+
+                            if (!isTransforming) {
+                                isTransforming = true
+                                startCentroid = centroid
+                                lastCentroid = centroid
+                                lastSpan = span
+                                startTime = System.currentTimeMillis()
+                            } else {
+                                val timeElapsed = System.currentTimeMillis() - startTime
+                                val distMoved = centroid - startCentroid
+                                // Swipe Detection (Reset Viewport only)
+                                if (timeElapsed < 400 && distMoved.getDistance() > 60f && abs(span - lastSpan) < 80f) {
+                                    val isVertical = abs(distMoved.y) > abs(distMoved.x)
+                                    if (!isVertical) {
+                                        // Swipe Horizontal -> Reset Viewport
+                                        coroutineScope.launch {
+                                            launch { viewportScale.animateTo(1f, animationSpec = androidx.compose.animation.core.tween(300)) }
+                                            launch { viewportOffsetX.animateTo(0f, animationSpec = androidx.compose.animation.core.tween(300)) }
+                                            launch { viewportOffsetY.animateTo(0f, animationSpec = androidx.compose.animation.core.tween(300)) }
+                                        }
+                                    }
+                                    // Wait until fingers are lifted
+                                    while (awaitPointerEvent().changes.any { it.pressed }) {
+                                        awaitPointerEvent().changes.forEach { it.consume() }
+                                    }
+                                    break
+                                } else if (timeElapsed > 150 || abs(span - lastSpan) > 10f) {
+                                    // Live Zoom and Pan
+                                    val zoomDelta = if (lastSpan > 0) span / lastSpan else 1f
+                                    val panDelta = centroid - lastCentroid
+                                    
+                                    coroutineScope.launch {
+                                        val oldScale = viewportScale.value
+                                        val newScale = (oldScale * zoomDelta).coerceIn(1f, 10f)
+                                        val actualZoom = newScale / oldScale
+                                        
+                                        if (newScale <= 1.01f) { // Snap to reset if zoomed out
+                                            viewportScale.snapTo(1f)
+                                            viewportOffsetX.snapTo(0f)
+                                            viewportOffsetY.snapTo(0f)
+                                        } else {
+                                            viewportScale.snapTo(newScale)
+                                            viewportOffsetX.snapTo((viewportOffsetX.value - centroid.x) * actualZoom + centroid.x + panDelta.x)
+                                            viewportOffsetY.snapTo((viewportOffsetY.value - centroid.y) * actualZoom + centroid.y + panDelta.y)
+                                        }
+                                    }
+                                    lastCentroid = centroid
+                                    lastSpan = span
+                                }
+                            }
+                        } else {
+                            isTransforming = false
+                        }
+                    } while (event.changes.any { it.pressed })
+                }
+            }
+        ) {
             // --- VIDEO SURFACE ---
             AndroidView(
                 modifier = Modifier
                     .fillMaxSize()
                     .wrapContentSize(Alignment.Center)
-                    .aspectRatio(16f / 9f, matchHeightConstraintsFirst = isLandscape),
+                    .aspectRatio(16f / 9f, matchHeightConstraintsFirst = isLandscape)
+                    .graphicsLayer {
+                        scaleX = viewportScale.value
+                        scaleY = viewportScale.value
+                        translationX = viewportOffsetX.value
+                        translationY = viewportOffsetY.value
+                        transformOrigin = TransformOrigin(0f, 0f)
+                    },
                 factory = { ctx ->
                     val surface = SurfaceView(ctx)
                     val touchHandler = DirectTouchHandler(networkClient, surface)
+                    touchHandler.onTwoFingerSingleTap = {
+                        activity.runOnUiThread {
+                            toggleKeyboard()
+                        }
+                    }
+                    touchHandler.onTwoFingerDoubleTap = {
+                        activity.runOnUiThread {
+                            showToolbar = !showToolbar
+                        }
+                    }
                     surface.tag = touchHandler
                     surface.setOnTouchListener(touchHandler)
                     surface.holder.addCallback(object : SurfaceHolder.Callback {
@@ -551,24 +661,7 @@ fun RemoteSessionScreen(
                 },
                 update = { view ->
                     val handler = view.tag as? DirectTouchHandler
-                    handler?.onSetKeyboard = { swipedUp ->
-                        if (swipedUp) {
-                            if (!isKeyboardActive) {
-                                isKeyboardActive = true
-                                focusRequester.requestFocus()
-                            } else if (!showSpecialKeys) {
-                                showSpecialKeys = true
-                            }
-                        } else {
-                            if (showSpecialKeys) {
-                                showSpecialKeys = false
-                            } else if (isKeyboardActive) {
-                                isKeyboardActive = false
-                                focusManager.clearFocus()
-                                releaseAllRemoteKeys()
-                            }
-                        }
-                    }
+                    handler?.updateTransform(viewportScale.value, viewportOffsetX.value, viewportOffsetY.value)
                 }
             )
 
