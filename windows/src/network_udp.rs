@@ -13,6 +13,7 @@ const MAX_UDP_PAYLOAD: usize = 1024; // 1024 perfectly fits inside Tailscale Wir
 const PACKET_HELLO: u8 = 0x01;
 const PACKET_VIDEO: u8 = 0x06;
 const PACKET_INPUT: u8 = 0x07;
+const PACKET_SETTINGS: u8 = 0x09;
 
 pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
     info!("========================================");
@@ -145,18 +146,31 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
                                 error!("Failed to send UDP chunk: {}", e);
                             }
                             
-                            // Adaptive pacing: 300us for local Wi-Fi, 2000us for Tailscale internet tunnel
-                            let spin_start = std::time::Instant::now();
-                            while spin_start.elapsed().as_micros() < pace_us {
-                                std::hint::spin_loop();
+                            // Efficient batch pacing to avoid 100% CPU lockups
+                            let batch_size = if is_tailscale { 6 } else { 50 };
+                            if chunk_index > 0 && chunk_index % batch_size == 0 {
+                                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                            } else {
+                                let spin_start = std::time::Instant::now();
+                                while spin_start.elapsed().as_micros() < 20 {
+                                    std::hint::spin_loop();
+                                }
                             }
-                            tokio::task::yield_now().await;
                         }
                     }
                 });
             }
             PACKET_INPUT => {
                 crate::input::handle_input_payload(&buf[5..len]);
+            }
+            PACKET_SETTINGS => {
+                if len >= 13 {
+                    let fps = u32::from_le_bytes(buf[5..9].try_into().unwrap());
+                    let bitrate = u32::from_le_bytes(buf[9..13].try_into().unwrap());
+                    crate::capture::TARGET_FPS.store(fps, std::sync::atomic::Ordering::Relaxed);
+                    crate::capture::TARGET_BITRATE.store(bitrate, std::sync::atomic::Ordering::Relaxed);
+                    info!("Client requested settings change: {} FPS, {} bps", fps, bitrate);
+                }
             }
             _ => {}
         }

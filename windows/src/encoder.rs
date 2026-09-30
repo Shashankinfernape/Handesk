@@ -304,6 +304,10 @@ impl MFEncoder {
                             }
                         }
                     }
+                    unsafe {
+                        std::mem::ManuallyDrop::drop(&mut out_buffers[0].pSample);
+                        std::mem::ManuallyDrop::drop(&mut out_buffers[0].pEvents);
+                    }
                 }
                 Err(e) if e.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => {
                     unsafe {
