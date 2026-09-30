@@ -140,6 +140,7 @@ class DirectTouchHandler(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 startX = event.x; startY = event.y
+                scrollLastY = event.y // track for 1-finger scroll
                 isLongPressCanceled = false
                 handler.removeCallbacks(longPressRunnable)
                 handler.postDelayed(longPressRunnable, 700)
@@ -181,10 +182,19 @@ class DirectTouchHandler(
                             (abs(event.x - startX) > 15f || abs(event.y - startY) > 15f)) {
                             isLongPressCanceled = true; handler.removeCallbacks(longPressRunnable)
                         }
-                        // Only send mouse move if we are actually dragging a window/icon
+                        
                         if (isHoldDragging) {
                             val (nx, ny) = screenToNorm(event.x, event.y)
                             networkClient.sendMouseMove(nx, ny)
+                        } else if (isLongPressCanceled) { // Normal 1-finger drag -> Scroll
+                            val cy = event.y
+                            val dy = cy - scrollLastY // reusing scrollLastY initialized in ACTION_DOWN
+                            scrollIntegral += dy / 3f
+                            when {
+                                scrollIntegral >  1f -> { networkClient.sendMouseScroll(( scrollIntegral * 25f).toInt()); scrollIntegral = 0f }
+                                scrollIntegral < -1f -> { networkClient.sendMouseScroll((scrollIntegral * 25f).toInt()); scrollIntegral = 0f }
+                            }
+                            scrollLastY = cy
                         }
                     }
 
@@ -196,27 +206,14 @@ class DirectTouchHandler(
                             val dy = cy - scrollStartY
                             val dt = System.currentTimeMillis() - scrollStartTime
                             
-                            if (!scrollActive) {
-                                // Smooth swipe detection: > 60px within 350ms is a clear UI flick
-                                if (dt < 350 && dy < -60f) {
-                                    twoFingerSwipeTriggered = true
-                                    onTwoFingerSwipeUp?.invoke()
-                                } else if (dt < 350 && dy > 60f) {
-                                    twoFingerSwipeTriggered = true
-                                    onTwoFingerSwipeDown?.invoke()
-                                } else if (abs(dy) > 20f && dt >= 150) {
-                                    // Slower/sustained movement -> lock into scroll mode
-                                    scrollActive = true
-                                    scrollLastY = cy
-                                }
-                            } else {
-                                val scrollDy = cy - scrollLastY
-                                scrollIntegral += scrollDy / 3f
-                                when {
-                                    scrollIntegral >  1f -> { networkClient.sendMouseScroll(( scrollIntegral * 25f).toInt()); scrollIntegral = 0f }
-                                    scrollIntegral < -1f -> { networkClient.sendMouseScroll((scrollIntegral * 25f).toInt()); scrollIntegral = 0f }
-                                }
-                                scrollLastY = cy
+                            // Since 1-finger handles scroll, 2-finger is purely for UI swipes.
+                            // We don't have to worry about accidentally scrolling.
+                            if (dt < 400 && dy < -50f) {
+                                twoFingerSwipeTriggered = true
+                                onTwoFingerSwipeUp?.invoke()
+                            } else if (dt < 400 && dy > 50f) {
+                                twoFingerSwipeTriggered = true
+                                onTwoFingerSwipeDown?.invoke()
                             }
                         }
                     }
