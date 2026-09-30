@@ -6,21 +6,34 @@ import android.view.MotionEvent
 import android.view.View
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 
-class DirectTouchHandler(private val networkClient: NetworkClient, private val view: View) : View.OnTouchListener {
-    
+/**
+ * DirectTouchHandler — definitive, correct implementation.
+ *
+ * Key design decision: we DO NOT apply any scaleX/scaleY/translationX/translationY
+ * to the SurfaceView. Doing so breaks touch dispatch inside Compose's AndroidView
+ * because Compose intercepts touches before the Android View system can inverse-transform
+ * the coordinates, so event.x/event.y remain in raw screen space while the math expects
+ * transformed space — causing every tap to land in the wrong place.
+ *
+ * Zoom behaviour: pinch-to-zoom sends Ctrl+ScrollWheel to the PC, zooming the REMOTE
+ * content. The SurfaceView always fills the screen and touch coordinates are a simple
+ * linear mapping with no local transform state.
+ *
+ * Black-bar correction: the SurfaceView fills the entire screen (fillMaxSize), but
+ * MediaCodec may letterbox/pillarbox the video inside it. We correct for that using
+ * the real video aspect ratio reported by the decoder.
+ */
+class DirectTouchHandler(
+    private val networkClient: NetworkClient,
+    private val view: View
+) : View.OnTouchListener {
+
+    /** Set this whenever the decoder reports the true video dimensions. */
     var videoAspectRatio = 16f / 9f
-    
+
+    // ── Long-press / drag ────────────────────────────────────────────────────
     private var isHoldDragging = false
-    private var lastScrollY = 0f
-
-    // Local Pan and Zoom state
-    private var scale = 1f
-    private var translateX = 0f
-    private var translateY = 0f
-
-    // Custom Long Press Implementation
     private val handler = Handler(Looper.getMainLooper())
     private var startX = 0f
     private var startY = 0f
@@ -32,115 +45,113 @@ class DirectTouchHandler(private val networkClient: NetworkClient, private val v
         }
     }
 
-    private val gestureDetector = GestureDetector(view.context, object : GestureDetector.SimpleOnGestureListener() {
-        override fun onSingleTapUp(e: MotionEvent): Boolean {
-            networkClient.sendMouseButton(1, true)
-            networkClient.sendMouseButton(1, false)
-            return true
+    // ── Tap / double-tap ─────────────────────────────────────────────────────
+    private val gestureDetector = GestureDetector(
+        view.context,
+        object : GestureDetector.SimpleOnGestureListener() {
+            override fun onSingleTapUp(e: MotionEvent): Boolean {
+                networkClient.sendMouseButton(1, true)
+                networkClient.sendMouseButton(1, false)
+                return true
+            }
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                networkClient.sendMouseButton(2, true)
+                networkClient.sendMouseButton(2, false)
+                return true
+            }
         }
+    )
 
-        override fun onDoubleTap(e: MotionEvent): Boolean {
-            networkClient.sendMouseButton(2, true)
-            networkClient.sendMouseButton(2, false)
-            return true
-        }
-    })
-
+    // ── Pinch-to-zoom (Ctrl+Scroll on the remote PC) ─────────────────────────
+    private var isPinchConfirmed = false
     private var isScrollConfirmed = false
+    private var accumulatedPinchScale = 1f
+
+    private val scaleGestureDetector = ScaleGestureDetector(
+        view.context,
+        object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                accumulatedPinchScale = 1f
+                return true
+            }
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                if (isScrollConfirmed) return false
+                accumulatedPinchScale *= detector.scaleFactor
+                if (!isPinchConfirmed) {
+                    if (accumulatedPinchScale > 1.20f || accumulatedPinchScale < 0.83f) {
+                        isPinchConfirmed = true
+                        networkClient.sendKeyEvent(0x11, true) // CTRL down
+                        val tick = if (accumulatedPinchScale > 1f) 120 else -120
+                        networkClient.sendMouseScroll(tick)
+                        accumulatedPinchScale = 1f
+                    }
+                } else {
+                    if (accumulatedPinchScale > 1.15f) {
+                        networkClient.sendMouseScroll(120)
+                        accumulatedPinchScale = 1f
+                    } else if (accumulatedPinchScale < 0.87f) {
+                        networkClient.sendMouseScroll(-120)
+                        accumulatedPinchScale = 1f
+                    }
+                }
+                return true
+            }
+            override fun onScaleEnd(detector: ScaleGestureDetector) {
+                if (isPinchConfirmed) {
+                    networkClient.sendKeyEvent(0x11, false) // CTRL up
+                    isPinchConfirmed = false
+                }
+            }
+        }
+    )
+
+    // ── Two-finger scroll ────────────────────────────────────────────────────
     private var startScrollY = 0f
+    private var lastScrollY = 0f
 
-    private var lastFocusScreenX = 0f
-    private var lastFocusScreenY = 0f
-
-    private val scaleGestureDetector = ScaleGestureDetector(view.context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-        override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
-            // detector.focusX is in unscaled coordinates because Android inverse-transforms the MotionEvent.
-            // We must convert it back to physical screen coordinates for accurate pan/zoom math.
-            lastFocusScreenX = (detector.focusX * scale) + translateX
-            lastFocusScreenY = (detector.focusY * scale) + translateY
-            return true
-        }
-
-        override fun onScale(detector: ScaleGestureDetector): Boolean {
-            if (isScrollConfirmed) return false
-
-            val scaleFactor = detector.scaleFactor
-            val currentFocusScreenX = (detector.focusX * scale) + translateX
-            val currentFocusScreenY = (detector.focusY * scale) + translateY
-
-            val newScale = (scale * scaleFactor).coerceIn(1f, 10f)
-            val scaleChange = newScale / scale
-
-            // Zoom translation offset (keeps the zoom centered precisely on the fingers)
-            translateX = currentFocusScreenX - (currentFocusScreenX - translateX) * scaleChange
-            translateY = currentFocusScreenY - (currentFocusScreenY - translateY) * scaleChange
-            
-            // Pan translation offset (moves the view if the fingers drag across the screen)
-            translateX += (currentFocusScreenX - lastFocusScreenX)
-            translateY += (currentFocusScreenY - lastFocusScreenY)
-
-            lastFocusScreenX = currentFocusScreenX
-            lastFocusScreenY = currentFocusScreenY
-            scale = newScale
-
-            applyTransform()
-            return true
-        }
-    })
-
-    private fun applyTransform() {
-        // Constrain the view so it doesn't fly off the screen
-        val maxTransX = 0f
-        val minTransX = view.width - (view.width * scale)
-        val maxTransY = 0f
-        val minTransY = view.height - (view.height * scale)
-
-        if (scale == 1f) {
-            translateX = 0f
-            translateY = 0f
-        } else {
-            translateX = translateX.coerceIn(minTransX, maxTransX)
-            translateY = translateY.coerceIn(minTransY, maxTransY)
-        }
-
-        view.pivotX = 0f
-        view.pivotY = 0f
-        view.scaleX = scale
-        view.scaleY = scale
-        view.translationX = translateX
-        view.translationY = translateY
-    }
-
+    // ── Three-finger swipe-up → Win+Tab ─────────────────────────────────────
     private var threeFingerStartY = 0f
     private var threeFingerTriggered = false
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Core touch handler
+    // ─────────────────────────────────────────────────────────────────────────
     override fun onTouch(v: View, event: MotionEvent): Boolean {
         gestureDetector.onTouchEvent(event)
         scaleGestureDetector.onTouchEvent(event)
-        
-        // Android framework automatically inverse-transforms event.x and event.y when view is scaled/translated.
-        // So event.x and event.y are always in the precise, unscaled original coordinate space of the SurfaceView.
-        
-        // Calculate exact video bounds inside SurfaceView to remove hardware black bars
-        val viewAspectRatio = v.width.toFloat() / v.height.toFloat()
-        var videoWidth = v.width.toFloat()
-        var videoHeight = v.height.toFloat()
-        var padX = 0f
-        var padY = 0f
-        
-        if (videoAspectRatio > viewAspectRatio) {
-            videoHeight = v.width / videoAspectRatio
-            padY = (v.height - videoHeight) / 2f
-        } else {
-            videoWidth = v.height * videoAspectRatio
-            padX = (v.width - videoWidth) / 2f
-        }
 
-        val adjustedX = event.x - padX
-        val adjustedY = event.y - padY
-        
-        val normX = ((adjustedX / videoWidth) * 65535).toInt().coerceIn(0, 65535)
-        val normY = ((adjustedY / videoHeight) * 65535).toInt().coerceIn(0, 65535)
+        // Map event.x / event.y → normalised remote coordinates [0..65535].
+        // The SurfaceView fills the full screen (fillMaxSize), but MediaCodec may
+        // add letterbox/pillarbox bars. We correct for that here.
+        val normX: Int
+        val normY: Int
+        run {
+            val vw = v.width.toFloat()
+            val vh = v.height.toFloat()
+            val viewAR = vw / vh
+
+            val videoW: Float
+            val videoH: Float
+            val padX: Float
+            val padY: Float
+
+            if (videoAspectRatio > viewAR) {
+                // pillarbox (bars on top/bottom)
+                videoW = vw
+                videoH = vw / videoAspectRatio
+                padX = 0f
+                padY = (vh - videoH) / 2f
+            } else {
+                // letterbox (bars on left/right)
+                videoH = vh
+                videoW = vh * videoAspectRatio
+                padX = (vw - videoW) / 2f
+                padY = 0f
+            }
+
+            normX = (((event.x - padX) / videoW) * 65535f).toInt().coerceIn(0, 65535)
+            normY = (((event.y - padY) / videoH) * 65535f).toInt().coerceIn(0, 65535)
+        }
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -152,64 +163,67 @@ class DirectTouchHandler(private val networkClient: NetworkClient, private val v
                 handler.removeCallbacks(longPressRunnable)
                 handler.postDelayed(longPressRunnable, 700)
             }
-            
+
             MotionEvent.ACTION_POINTER_DOWN -> {
                 isLongPressCanceled = true
                 handler.removeCallbacks(longPressRunnable)
-                
-                if (event.pointerCount == 2) {
-                    startScrollY = event.getY(1)
-                    lastScrollY = event.getY(1)
-                    isScrollConfirmed = false
-                } else if (event.pointerCount == 3) {
-                    threeFingerStartY = event.y
-                    threeFingerTriggered = false
+                when (event.pointerCount) {
+                    2 -> {
+                        startScrollY = event.getY(1)
+                        lastScrollY = event.getY(1)
+                        isScrollConfirmed = false
+                        isPinchConfirmed = false
+                    }
+                    3 -> {
+                        threeFingerStartY = event.y
+                        threeFingerTriggered = false
+                    }
                 }
             }
-            
+
             MotionEvent.ACTION_MOVE -> {
-                if (event.pointerCount == 1) {
-                    if (!isLongPressCanceled && (Math.abs(event.x - startX) > 15f || Math.abs(event.y - startY) > 15f)) {
-                        isLongPressCanceled = true
-                        handler.removeCallbacks(longPressRunnable)
+                when (event.pointerCount) {
+                    1 -> {
+                        if (!isLongPressCanceled &&
+                            (Math.abs(event.x - startX) > 15f || Math.abs(event.y - startY) > 15f)
+                        ) {
+                            isLongPressCanceled = true
+                            handler.removeCallbacks(longPressRunnable)
+                        }
+                        networkClient.sendMouseMove(normX, normY)
                     }
-                    
-                    networkClient.sendMouseMove(normX, normY)
-                } else if (event.pointerCount == 2) {
-                    if (!scaleGestureDetector.isInProgress) {
-                        val currentY = event.getY(1)
-                        if (!isScrollConfirmed) {
-                            if (Math.abs(currentY - startScrollY) > 10f) {
-                                isScrollConfirmed = true
-                                lastScrollY = currentY
-                            }
-                        } else {
-                            val deltaY = currentY - lastScrollY
-                            if (Math.abs(deltaY) > 2f) {
-                                val scrollAmount = (deltaY * 0.8f).toInt()
-                                networkClient.sendMouseScroll(scrollAmount)
-                                lastScrollY = currentY
+                    2 -> {
+                        if (!scaleGestureDetector.isInProgress) {
+                            val cy = event.getY(1)
+                            if (!isScrollConfirmed) {
+                                if (Math.abs(cy - startScrollY) > 10f) {
+                                    isScrollConfirmed = true
+                                    lastScrollY = cy
+                                }
+                            } else {
+                                val dy = cy - lastScrollY
+                                if (Math.abs(dy) > 2f) {
+                                    networkClient.sendMouseScroll((dy * 0.8f).toInt())
+                                    lastScrollY = cy
+                                }
                             }
                         }
                     }
-                } else if (event.pointerCount == 3) {
-                    if (!threeFingerTriggered) {
-                        val deltaY = event.y - threeFingerStartY
-                        if (deltaY < -150f) {
+                    3 -> {
+                        if (!threeFingerTriggered && event.y - threeFingerStartY < -150f) {
                             threeFingerTriggered = true
-                            networkClient.sendKeyEvent(0x5B, true)
-                            networkClient.sendKeyEvent(0x09, true)
+                            networkClient.sendKeyEvent(0x5B, true)  // Win
+                            networkClient.sendKeyEvent(0x09, true)  // Tab
                             networkClient.sendKeyEvent(0x09, false)
                             networkClient.sendKeyEvent(0x5B, false)
                         }
                     }
                 }
             }
-            
+
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 isLongPressCanceled = true
                 handler.removeCallbacks(longPressRunnable)
-
                 if (isHoldDragging) {
                     networkClient.sendMouseButton(1, false)
                     isHoldDragging = false
