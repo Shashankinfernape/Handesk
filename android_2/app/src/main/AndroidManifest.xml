@@ -12,7 +12,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="Handesk"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
+        android:theme="@style/Theme.Handesk.Splash"
         android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
