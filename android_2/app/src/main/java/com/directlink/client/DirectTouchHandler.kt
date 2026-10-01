@@ -44,13 +44,11 @@ class DirectTouchHandler(
     }
 
     private fun getNormX(x: Float): Int {
-        val realX = (x - viewportOffsetX) / viewportScale
-        return ((realX / view.width) * 65535).toInt().coerceIn(0, 65535)
+        return ((x / view.width) * 65535).toInt().coerceIn(0, 65535)
     }
 
     private fun getNormY(y: Float): Int {
-        val realY = (y - viewportOffsetY) / viewportScale
-        return ((realY / view.height) * 65535).toInt().coerceIn(0, 65535)
+        return ((y / view.height) * 65535).toInt().coerceIn(0, 65535)
     }
 
     private val gestureDetector = GestureDetector(view.context, object : GestureDetector.SimpleOnGestureListener() {
