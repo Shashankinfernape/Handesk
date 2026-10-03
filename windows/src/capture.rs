@@ -19,6 +19,7 @@ use windows::Win32::Graphics::Dxgi::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
 pub static TARGET_BITRATE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(2_000_000);
+pub static TARGET_FPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(60);
 
 pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
     info!("Starting DXGI Desktop Duplication capture loop");

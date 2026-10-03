@@ -324,12 +324,6 @@ impl MFEncoder {
                     break;
                 }
             }
-
-            // Properly release the COM objects to prevent a massive memory leak (OOM crash)
-            unsafe {
-                std::mem::ManuallyDrop::drop(&mut out_buffers[0].pSample);
-                std::mem::ManuallyDrop::drop(&mut out_buffers[0].pEvents);
-            }
         }
 
         out_data
