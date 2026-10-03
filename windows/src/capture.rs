@@ -208,19 +208,10 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
             }
         }
 
-        // Dynamic FPS throttle: keeps stream smooth without flooding the network
-        let target_fps = TARGET_FPS.load(std::sync::atomic::Ordering::Relaxed).max(10).min(144);
-        let target_frame_time_us = 1_000_000 / target_fps as u128;
-        
-        let elapsed = frame_start.elapsed().as_micros();
-        if elapsed < target_frame_time_us {
-            let sleep_us = target_frame_time_us - elapsed;
-            if sleep_us > 2000 {
-                tokio::task::yield_now().await;
-            }
-            while frame_start.elapsed().as_micros() < target_frame_time_us {
-                std::hint::spin_loop();
-            }
+        // 60fps throttle: keeps stream smooth without flooding the network
+        let elapsed = frame_start.elapsed();
+        if elapsed < Duration::from_micros(16_667) {
+            tokio::time::sleep(Duration::from_micros(16_667) - elapsed).await;
         }
         frame_start = tokio::time::Instant::now();
 
