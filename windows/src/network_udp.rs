@@ -152,11 +152,6 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
                             while spin_start.elapsed().as_micros() < pace_us {
                                 std::hint::spin_loop();
                             }
-                            
-                            // Yield back to Tokio every 10 packets to prevent 100% thread lockup
-                            if chunk_index % 10 == 0 {
-                                tokio::task::yield_now().await;
-                            }
                         }
                     }
                 });
