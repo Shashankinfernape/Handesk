@@ -63,6 +63,12 @@ pub fn handle_input_payload(payload: &[u8]) {
                 crate::capture::TARGET_BITRATE.store(new_bitrate, std::sync::atomic::Ordering::Relaxed);
             }
         }
+        0x06 => { // FPS Settings
+            if payload.len() >= 2 {
+                let fps = (payload[1] as u32).clamp(15, 144);
+                crate::capture::TARGET_FPS.store(fps, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
         _ => {}
     }
 }

@@ -419,6 +419,8 @@ fun RemoteSessionScreen(
     var showToolbar by remember { mutableStateOf(false) }
     var expandedQualityMenu by remember { mutableStateOf(false) }
     var currentQuality by remember { mutableStateOf("Auto") }
+    var expandedFpsMenu by remember { mutableStateOf(false) }
+    var currentFps by remember { mutableStateOf(60) }
     var isPcAudioMuted by remember { mutableStateOf(false) }
     
     val focusRequester = remember { FocusRequester() }
@@ -780,6 +782,43 @@ fun RemoteSessionScreen(
                         }
                     }
                     
+                    // Frame Rate
+                    Box {
+                        ToolbarIconButton(
+                            icon = Icons.Filled.Refresh,
+                            label = "${currentFps} FPS",
+                            onClick = { expandedFpsMenu = true }
+                        )
+
+                        DropdownMenu(
+                            expanded = expandedFpsMenu,
+                            onDismissRequest = { expandedFpsMenu = false },
+                            modifier = Modifier.background(SurfaceDark).width(160.dp)
+                        ) {
+                            listOf(144, 120, 90, 60, 30).forEach { fps ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            if (currentFps == fps) {
+                                                Icon(Icons.Filled.Check, contentDescription = null, tint = BrandBlue, modifier = Modifier.size(18.dp))
+                                            } else {
+                                                Spacer(Modifier.width(18.dp))
+                                            }
+                                            Spacer(Modifier.width(12.dp))
+                                            Text("$fps FPS", color = TextPrimary, fontSize = 14.sp)
+                                        }
+                                    },
+                                    onClick = {
+                                        currentFps = fps
+                                        networkClient.sendFpsChange(fps)
+                                        expandedFpsMenu = false
+                                        showToolbar = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+
                     // Audio PC Toggle
                     ToolbarIconButton(
                         icon = if (isPcAudioMuted) Icons.Filled.Close else Icons.Filled.PlayArrow,

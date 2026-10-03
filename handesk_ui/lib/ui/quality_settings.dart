@@ -10,7 +10,7 @@ class QualitySettingsWidget extends StatefulWidget {
 
 class _QualitySettingsWidgetState extends State<QualitySettingsWidget> {
   int _selectedFps = 60;
-  int _selectedBitrate = 4000000; // 4 Mbps default
+  int _selectedBitrate = 2000000; // matches backend default
 
   void _updateSettings() {
     try {
@@ -65,17 +65,21 @@ class _QualitySettingsWidgetState extends State<QualitySettingsWidget> {
             },
           )),
           const SizedBox(height: 16),
-          _buildRow('Max Bitrate', DropdownButton<int>(
+          _buildRow('Quality', DropdownButton<int>(
             value: _selectedBitrate,
             dropdownColor: const Color(0xFF2C2C2C),
             style: const TextStyle(color: Colors.cyanAccent, fontFamily: 'monospace', fontSize: 14),
             underline: Container(height: 1, color: Colors.white24),
             items: const [
-              DropdownMenuItem(value: 1000000, child: Text('Low (1 Mbps)')),
-              DropdownMenuItem(value: 2000000, child: Text('Medium (2 Mbps)')),
-              DropdownMenuItem(value: 4000000, child: Text('High - 1080p (4 Mbps)')),
-              DropdownMenuItem(value: 8000000, child: Text('Ultra - 1440p (8 Mbps)')),
-              DropdownMenuItem(value: 15000000, child: Text('Max (15 Mbps)')),
+              DropdownMenuItem(value: 50000000, child: Text('Source (50 Mbps)')),
+              DropdownMenuItem(value: 25000000, child: Text('1440p (25 Mbps)')),
+              DropdownMenuItem(value: 15000000, child: Text('1080p (15 Mbps)')),
+              DropdownMenuItem(value: 10000000, child: Text('720p (10 Mbps)')),
+              DropdownMenuItem(value: 5000000, child: Text('480p (5 Mbps)')),
+              DropdownMenuItem(value: 3000000, child: Text('360p (3 Mbps)')),
+              DropdownMenuItem(value: 2000000, child: Text('Default (2 Mbps)')),
+              DropdownMenuItem(value: 1000000, child: Text('240p (1 Mbps)')),
+              DropdownMenuItem(value: 500000, child: Text('144p (0.5 Mbps)')),
             ],
             onChanged: (val) {
               if (val != null) {

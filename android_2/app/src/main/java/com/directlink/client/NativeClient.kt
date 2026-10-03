@@ -135,6 +135,13 @@ class NativeClient {
         sendInputPacket(payload)
     }
 
+    fun sendFpsChange(fps: Int) {
+        val payload = ByteArray(2)
+        payload[0] = 0x06
+        payload[1] = fps.toByte()
+        sendInputPacket(payload)
+    }
+
     fun togglePcMute() {
         // Send VK_VOLUME_MUTE (173) down and up
         sendKeyEvent(173, true)

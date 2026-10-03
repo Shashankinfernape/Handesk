@@ -208,10 +208,12 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
             }
         }
 
-        // 60fps throttle: keeps stream smooth without flooding the network
+        // FPS throttle (user-selectable from Android / Windows UI, default 60)
+        let fps = TARGET_FPS.load(std::sync::atomic::Ordering::Relaxed).clamp(15, 144) as u64;
+        let frame_budget = Duration::from_micros(1_000_000 / fps);
         let elapsed = frame_start.elapsed();
-        if elapsed < Duration::from_micros(16_667) {
-            tokio::time::sleep(Duration::from_micros(16_667) - elapsed).await;
+        if elapsed < frame_budget {
+            tokio::time::sleep(frame_budget - elapsed).await;
         }
         frame_start = tokio::time::Instant::now();
 
