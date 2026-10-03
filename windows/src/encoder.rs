@@ -257,6 +257,11 @@ impl MFEncoder {
             if let Ok(api) = codec_api {
                 let var_bitrate = windows::core::VARIANT::from(bitrate);
                 let _ = api.SetValue(&windows::Win32::Media::MediaFoundation::CODECAPI_AVEncCommonMeanBitRate, &var_bitrate);
+                
+                // CRITICAL: Many hardware encoders (like NVENC) silently ignore dynamic bitrate changes 
+                // unless you force an I-Frame immediately afterwards. This ensures the "high res" applies instantly.
+                let var_true = windows::core::VARIANT::from(true);
+                let _ = api.SetValue(&windows::Win32::Media::MediaFoundation::CODECAPI_AVEncVideoForceKeyFrame, &var_true);
             }
         }
     }

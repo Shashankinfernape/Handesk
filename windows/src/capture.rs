@@ -169,9 +169,11 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
         let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut desktop_resource: Option<IDXGIResource> = None;
         
-        // Wait up to 16ms for a new frame (60fps). This prevents CPU spinning on idle screens.
+        // Wait 0ms for a new frame (non-blocking). 
+        // If a frame is ready, we grab it. If not, we fall through and sleep exactly up to our frame budget!
+        // This completely removes the 60fps hard cap caused by DXGI's internal timer.
         let res = unsafe {
-            duplication.AcquireNextFrame(16, &mut frame_info, &mut desktop_resource)
+            duplication.AcquireNextFrame(0, &mut frame_info, &mut desktop_resource)
         };
 
         match res {
