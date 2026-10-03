@@ -7,19 +7,24 @@ import 'ui/shell.dart';
 import 'ui/quick_connect.dart';
 import 'ui/this_device.dart';
 import 'ui/recent_connections.dart';
+import 'ui/quality_settings.dart';
 
 typedef BackendFunc = Void Function();
 typedef BackendCall = void Function();
+typedef SettingsFunc = Void Function(Uint32 fps, Uint32 bitrate);
+typedef SettingsCall = void Function(int fps, int bitrate);
 
 late DynamicLibrary dylib;
 late BackendCall startBackend;
 late BackendCall stopBackend;
+late SettingsCall setSettings;
 
 void main() {
   try {
     dylib = DynamicLibrary.open('directlink_host.dll');
     startBackend = dylib.lookupFunction<BackendFunc, BackendCall>('start_directlink_backend');
     stopBackend = dylib.lookupFunction<BackendFunc, BackendCall>('stop_directlink_backend');
+    setSettings = dylib.lookupFunction<SettingsFunc, SettingsCall>('set_quality_settings');
     
     // Auto-start backend on launch
     startBackend();
@@ -137,11 +142,18 @@ class _HomePageState extends State<HomePage> {
                   children: [
                     Expanded(
                       flex: 5,
-                      child: ThisDeviceWidget(
-                        tailscaleIp: tailscaleIp,
-                        lanIp: lanIp,
-                        isServiceRunning: isServiceRunning,
-                        onToggle: toggleService,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          ThisDeviceWidget(
+                            tailscaleIp: tailscaleIp,
+                            lanIp: lanIp,
+                            isServiceRunning: isServiceRunning,
+                            onToggle: toggleService,
+                          ),
+                          const SizedBox(height: 24),
+                          const QualitySettingsWidget(),
+                        ],
                       ),
                     ),
                     const SizedBox(width: 48),

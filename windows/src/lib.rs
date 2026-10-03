@@ -54,3 +54,9 @@ pub extern "C" fn stop_directlink_backend() {
         info!("Backend stopped successfully.");
     }
 }
+
+#[no_mangle]
+pub extern "C" fn set_quality_settings(fps: u32, bitrate: u32) {
+    capture::TARGET_FPS.store(fps, std::sync::atomic::Ordering::Relaxed);
+    capture::TARGET_BITRATE.store(bitrate, std::sync::atomic::Ordering::Relaxed);
+}
