@@ -69,10 +69,6 @@ void decode_nalu(const std::vector<uint8_t>& data) {
     }
 
     if (!has_received_idr && !is_keyframe) return;
-    
-    if (is_keyframe && has_received_idr) {
-        AMediaCodec_flush(decoder);
-    }
     has_received_idr = true;
 
     ssize_t in_idx = AMediaCodec_dequeueInputBuffer(decoder, 16000);
@@ -152,6 +148,14 @@ void network_loop(std::string ip) {
         
         long long now = current_time_ms();
         if (frame_buffers.find(frame_id) == frame_buffers.end()) {
+            // Aggressive Garbage Collection: Prevent memory leak from dropped UDP packets
+            if (frame_buffers.size() > 15) {
+                // Keep only the most recent 5 frames, erase the rest
+                auto it = frame_buffers.begin();
+                while (frame_buffers.size() > 5 && it != frame_buffers.end()) {
+                    it = frame_buffers.erase(it);
+                }
+            }
             frame_buffers[frame_id] = {total_chunks, {}, now};
         }
         
