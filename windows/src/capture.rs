@@ -166,14 +166,17 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
             encoder.set_bitrate(current_bitrate);
         }
 
+        // FPS throttle (user-selectable from Android / Windows UI, default 60)
+        let fps = TARGET_FPS.load(std::sync::atomic::Ordering::Relaxed).clamp(15, 144) as u32;
+        let timeout_ms = 1000 / fps;
+        let frame_budget = Duration::from_micros(1_000_000 / fps as u64);
+
         let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut desktop_resource: Option<IDXGIResource> = None;
         
-        // Wait 0ms for a new frame (non-blocking). 
-        // If a frame is ready, we grab it. If not, we fall through and sleep exactly up to our frame budget!
-        // This completely removes the 60fps hard cap caused by DXGI's internal timer.
+        // Let the GPU block natively for up to timeout_ms. This prevents high CPU usage and uses perfect hardware pacing.
         let res = unsafe {
-            duplication.AcquireNextFrame(0, &mut frame_info, &mut desktop_resource)
+            duplication.AcquireNextFrame(timeout_ms, &mut frame_info, &mut desktop_resource)
         };
 
         match res {
@@ -210,12 +213,13 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
             }
         }
 
-        // FPS throttle (user-selectable from Android / Windows UI, default 60)
-        let fps = TARGET_FPS.load(std::sync::atomic::Ordering::Relaxed).clamp(15, 144) as u64;
-        let frame_budget = Duration::from_micros(1_000_000 / fps);
+        // Perfect frame pacing: if DXGI returned early (e.g. monitor is 144Hz but we want 60fps), 
+        // spin-wait the remaining fraction of a millisecond to enforce the exact FPS target without OS timer stutter.
         let elapsed = frame_start.elapsed();
         if elapsed < frame_budget {
-            tokio::time::sleep(frame_budget - elapsed).await;
+            while frame_start.elapsed() < frame_budget {
+                std::hint::spin_loop();
+            }
         }
         frame_start = tokio::time::Instant::now();
 
