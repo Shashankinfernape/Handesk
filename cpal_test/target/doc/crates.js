@@ -1,2 +1,0 @@
-window.ALL_CRATES = ["anyhow","cpal","cpal_test","dasp_sample","once_cell","pin_project_lite","proc_macro2","quote","syn","tracing","tracing_attributes","tracing_core","unicode_ident","windows","windows_collections","windows_core","windows_future","windows_implement","windows_interface","windows_link","windows_numerics","windows_result","windows_strings","windows_threading"];
-//{"start":21,"fragment_lengths":[8,7,12,14,12,19,14,8,6,10,21,15,16,10,22,15,17,20,20,15,19,17,18,20]}

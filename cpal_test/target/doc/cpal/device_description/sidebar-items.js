@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["DeviceDirection","DeviceType","InterfaceType"],"struct":["DeviceDescription","DeviceDescriptionBuilder"]};

@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["ALL_HOSTS"],"enum":["HostId"],"fn":["available_hosts","default_host","host_from_id"],"struct":["Device","Devices","Host","Stream","SupportedInputConfigs","SupportedOutputConfigs"]};
