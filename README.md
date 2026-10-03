@@ -2,7 +2,7 @@
 
 Handesk is a high-performance, low-latency remote desktop application that lets you control your Windows PC directly from your Android device. It uses hardware-accelerated video encoding (H.265) and a custom UDP protocol to deliver flawless 60fps streaming and instant touch interactions.
 
-## 🚀 Download Latest Release
+## 🚀 Download Latest Release (3 Oct 2026)
 
 Get the latest version of Handesk for your devices:
 
