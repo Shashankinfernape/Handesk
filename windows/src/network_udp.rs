@@ -146,15 +146,16 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
                                 error!("Failed to send UDP chunk: {}", e);
                             }
                             
-                            // Efficient batch pacing to avoid 100% CPU lockups
-                            let batch_size = if is_tailscale { 6 } else { 50 };
-                            if chunk_index > 0 && chunk_index % batch_size == 0 {
-                                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                            } else {
-                                let spin_start = std::time::Instant::now();
-                                while spin_start.elapsed().as_micros() < 20 {
-                                    std::hint::spin_loop();
-                                }
+                            // Adaptive pacing to prevent buffer overflow and CPU lockup
+                            let pace_us = if is_tailscale { 2500 } else { 300 };
+                            let spin_start = std::time::Instant::now();
+                            while spin_start.elapsed().as_micros() < pace_us {
+                                std::hint::spin_loop();
+                            }
+                            
+                            // Yield back to Tokio every 10 packets to prevent 100% thread lockup
+                            if chunk_index % 10 == 0 {
+                                tokio::task::yield_now().await;
                             }
                         }
                     }

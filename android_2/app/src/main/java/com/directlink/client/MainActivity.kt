@@ -29,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -512,7 +513,7 @@ fun RemoteSessionScreen(
         modifier = Modifier
             .size(1.dp)
             .focusRequester(focusRequester)
-            .androidx.compose.ui.focus.onFocusChanged { state ->
+            .onFocusChanged { state ->
                 if (!state.isFocused && isKeyboardActive) {
                     isKeyboardActive = false
                     showSpecialKeys = false
