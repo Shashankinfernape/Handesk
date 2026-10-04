@@ -21,6 +21,7 @@
 JavaVM* g_jvm = nullptr;
 jobject g_obj = nullptr;
 jmethodID g_onAudioData_method = nullptr;
+jmethodID g_onStatusUpdate_method = nullptr;
 
 std::atomic<bool> is_running(false);
 std::thread network_thread;
@@ -186,6 +187,15 @@ void network_loop(std::string ip) {
             continue;
         }
 
+        if (buf[4] == 0x09) {
+            if (len >= 13 && attached && g_obj && g_onStatusUpdate_method) {
+                uint32_t host_fps = (buf[8] << 24) | (buf[7] << 16) | (buf[6] << 8) | buf[5];
+                uint32_t host_bitrate = (buf[12] << 24) | (buf[11] << 16) | (buf[10] << 8) | buf[9];
+                env->CallVoidMethod(g_obj, g_onStatusUpdate_method, (jint)host_fps, (jint)host_bitrate);
+            }
+            continue;
+        }
+
         if (buf[4] != 0x06) continue;
 
         uint32_t frame_id = (buf[8] << 24) | (buf[7] << 16) | (buf[6] << 8) | buf[5];
@@ -252,6 +262,7 @@ Java_com_directlink_client_NativeClient_connectNative(JNIEnv* env, jobject thiz,
     g_obj = env->NewGlobalRef(thiz);
     jclass clazz = env->GetObjectClass(thiz);
     g_onAudioData_method = env->GetMethodID(clazz, "onAudioData", "([B)V");
+    g_onStatusUpdate_method = env->GetMethodID(clazz, "onStatusUpdate", "(II)V");
     env->DeleteLocalRef(clazz);
     std::string ip(ip_cstr);
     env->ReleaseStringUTFChars(ip_jstr, ip_cstr);

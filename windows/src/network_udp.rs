@@ -129,7 +129,18 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
                 let socket_clone = socket.clone();
                 tokio::spawn(async move {
                     let mut sequence: u32 = 0;
+                    let mut frame_count = 0;
                     while let Some(nalu) = video_rx.recv().await {
+                        frame_count += 1;
+                        if frame_count % 30 == 0 {
+                            let fps = crate::capture::TARGET_FPS.load(std::sync::atomic::Ordering::Relaxed);
+                            let bitrate = crate::capture::TARGET_BITRATE.load(std::sync::atomic::Ordering::Relaxed);
+                            let mut status_buf = vec![b'D', b'L', b'P', b'1', 0x09];
+                            status_buf.extend_from_slice(&fps.to_le_bytes());
+                            status_buf.extend_from_slice(&bitrate.to_le_bytes());
+                            let _ = socket_clone.send_to(&status_buf, remote_addr).await;
+                        }
+
                         sequence = sequence.wrapping_add(1);
                         let total_chunks = ((nalu.len() + MAX_UDP_PAYLOAD - 1) / MAX_UDP_PAYLOAD) as u16;
                         

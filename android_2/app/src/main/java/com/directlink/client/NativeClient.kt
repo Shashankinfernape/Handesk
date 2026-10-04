@@ -32,6 +32,13 @@ class NativeClient {
     // PCM output buffer — max 120ms frame (5760 samples * 2 channels)
     private val pcmBuffer = ShortArray(5760 * 2)
 
+    var onStatusUpdateListener: ((Int, Int) -> Unit)? = null
+
+    // Called from C++ JNI when an 0x09 Status packet arrives
+    fun onStatusUpdate(fps: Int, bitrate: Int) {
+        onStatusUpdateListener?.invoke(fps, bitrate)
+    }
+
     // Called from C++ JNI when an 0x08 Opus packet arrives
     fun onAudioData(opusData: ByteArray) {
         try {

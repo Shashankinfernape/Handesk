@@ -426,6 +426,29 @@ fun RemoteSessionScreen(
     val focusRequester = remember { FocusRequester() }
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+
+    LaunchedEffect(networkClient) {
+        networkClient.onStatusUpdateListener = { newFps, newBitrate ->
+            if (currentFps != newFps) {
+                currentFps = newFps
+            }
+            val matchingQuality = when (newBitrate) {
+                500_000 -> "144p"
+                1_000_000 -> "240p"
+                2_000_000 -> "360p" // Fallback map
+                3_000_000 -> "360p"
+                5_000_000 -> "480p"
+                10_000_000 -> "720p"
+                15_000_000 -> "1080p HD"
+                25_000_000 -> "1440p HD"
+                50_000_000 -> "Source (Lossless)"
+                else -> ""
+            }
+            if (matchingQuality.isNotEmpty() && currentQuality != matchingQuality) {
+                currentQuality = matchingQuality
+            }
+        }
+    }
     
     // --- KEYBOARD & ORIENTATION STATE ---
     var isKeyboardActive by remember { mutableStateOf(false) }
