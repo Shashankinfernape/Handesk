@@ -213,13 +213,10 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
             }
         }
 
-        // Perfect frame pacing: if DXGI returned early (e.g. monitor is 144Hz but we want 60fps), 
-        // spin-wait the remaining fraction of a millisecond to enforce the exact FPS target without OS timer stutter.
+        // FPS throttle: keeps stream smooth without flooding the network
         let elapsed = frame_start.elapsed();
         if elapsed < frame_budget {
-            while frame_start.elapsed() < frame_budget {
-                std::hint::spin_loop();
-            }
+            tokio::time::sleep(frame_budget - elapsed).await;
         }
         frame_start = tokio::time::Instant::now();
 
