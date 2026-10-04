@@ -91,9 +91,21 @@ void decode_nalu(const std::vector<uint8_t>& data) {
 
     AMediaCodecBufferInfo info;
     ssize_t out_idx = AMediaCodec_dequeueOutputBuffer(decoder, &info, 0);
+    ssize_t last_out_idx = -1;
+    
+    // Drain all available frames from the decoder
     while (out_idx >= 0) {
-        AMediaCodec_releaseOutputBuffer(decoder, out_idx, has_surface.load());
+        if (last_out_idx >= 0) {
+            // We found a newer frame! Drop the older one without rendering to catch up to real-time.
+            AMediaCodec_releaseOutputBuffer(decoder, last_out_idx, false);
+        }
+        last_out_idx = out_idx;
         out_idx = AMediaCodec_dequeueOutputBuffer(decoder, &info, 0);
+    }
+    
+    // Render ONLY the absolute latest frame we pulled out
+    if (last_out_idx >= 0) {
+        AMediaCodec_releaseOutputBuffer(decoder, last_out_idx, has_surface.load());
     }
 }
 
@@ -108,8 +120,8 @@ void network_loop(std::string ip) {
     udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_socket < 0) return;
 
-    // Set 8MB Receive Buffer
-    int rcv_buf_size = 8 * 1024 * 1024;
+    // Set 1MB Receive Buffer (Big enough for burst, small enough to prevent latency)
+    int rcv_buf_size = 1024 * 1024;
     setsockopt(udp_socket, SOL_SOCKET, SO_RCVBUF, &rcv_buf_size, sizeof(rcv_buf_size));
 
     memset(&target_addr_global, 0, sizeof(target_addr_global));

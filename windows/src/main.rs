@@ -36,7 +36,7 @@ fn main() -> Result<()> {
             
             let socket2_sock = Socket::new(Domain::IPV4, Type::DGRAM, None).unwrap();
             socket2_sock.set_nonblocking(true).unwrap();
-            let _ = socket2_sock.set_send_buffer_size(8 * 1024 * 1024);
+            let _ = socket2_sock.set_send_buffer_size(2 * 1024 * 1024);
             socket2_sock.bind(&"0.0.0.0:21118".parse::<SocketAddr>().unwrap().into()).unwrap();
             
             let std_socket: std::net::UdpSocket = socket2_sock.into();
