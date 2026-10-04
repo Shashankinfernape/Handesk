@@ -31,7 +31,16 @@ fn main() -> Result<()> {
             .unwrap();
 
         rt.block_on(async {
-            let socket = std::sync::Arc::new(tokio::net::UdpSocket::bind("0.0.0.0:21118").await.unwrap());
+            use socket2::{Socket, Domain, Type};
+            use std::net::SocketAddr;
+            
+            let socket2_sock = Socket::new(Domain::IPV4, Type::DGRAM, None).unwrap();
+            socket2_sock.set_nonblocking(true).unwrap();
+            let _ = socket2_sock.set_send_buffer_size(8 * 1024 * 1024);
+            socket2_sock.bind(&"0.0.0.0:21118".parse::<SocketAddr>().unwrap().into()).unwrap();
+            
+            let std_socket: std::net::UdpSocket = socket2_sock.into();
+            let socket = std::sync::Arc::new(tokio::net::UdpSocket::from_std(std_socket).unwrap());
             if let Err(e) = network_udp::start_direct_server(socket).await {
                 error!("Server crashed: {:?}", e);
             }

@@ -120,8 +120,12 @@ impl MFEncoder {
                 let var_zero = windows::core::VARIANT::from(0u32);
                 let _ = unsafe { codec_api.SetValue(&windows::Win32::Media::MediaFoundation::CODECAPI_AVEncMPVDefaultBPictureCount, &var_zero) };
 
-                // Force an IDR Keyframe every 15 frames (4 times a second at 60fps) to instantly recover from UDP stream corruption (stuck pixels)
-                let var_gop = windows::core::VARIANT::from(15u32);
+                // Enable Low Latency Mode for hardware encoders
+                let var_true = windows::core::VARIANT::from(true);
+                let _ = unsafe { codec_api.SetValue(&windows::Win32::Media::MediaFoundation::CODECAPI_AVLowLatencyMode, &var_true) };
+
+                // Force an IDR Keyframe every 120 frames (2 seconds at 60fps) to prevent constant 4x/sec stutter spikes
+                let var_gop = windows::core::VARIANT::from(120u32);
                 let _ = unsafe { codec_api.SetValue(&windows::Win32::Media::MediaFoundation::CODECAPI_AVEncMPVGOPSize, &var_gop) };
 
                 // Force H.264 Baseline Profile (66) so Android tablets can decode it without crashing!
@@ -260,6 +264,15 @@ impl MFEncoder {
                 
                 // CRITICAL: Many hardware encoders (like NVENC) silently ignore dynamic bitrate changes 
                 // unless you force an I-Frame immediately afterwards. This ensures the "high res" applies instantly.
+                let var_true = windows::core::VARIANT::from(true);
+                let _ = api.SetValue(&windows::Win32::Media::MediaFoundation::CODECAPI_AVEncVideoForceKeyFrame, &var_true);
+            }
+        }
+    }
+
+    pub fn force_idr(&self) {
+        unsafe {
+            if let Ok(api) = self.transform.cast::<windows::Win32::Media::MediaFoundation::ICodecAPI>() {
                 let var_true = windows::core::VARIANT::from(true);
                 let _ = api.SetValue(&windows::Win32::Media::MediaFoundation::CODECAPI_AVEncVideoForceKeyFrame, &var_true);
             }

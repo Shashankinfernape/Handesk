@@ -47,6 +47,8 @@ long long current_time_ms() {
     return (long long)res.tv_sec * 1000 + res.tv_nsec / 1000000;
 }
 
+std::atomic<bool> needs_recovery{false};
+
 void decode_nalu(const std::vector<uint8_t>& data) {
     std::lock_guard<std::mutex> lock(decoder_mutex);
     if (!decoder) return;
@@ -70,8 +72,10 @@ void decode_nalu(const std::vector<uint8_t>& data) {
 
     if (!has_received_idr && !is_keyframe) return;
     
-    if (is_keyframe && has_received_idr) {
+    // Only flush if we are recovering from a dropped frame
+    if (is_keyframe && needs_recovery) {
         AMediaCodec_flush(decoder);
+        needs_recovery = false;
     }
     has_received_idr = true;
 
@@ -104,6 +108,10 @@ void network_loop(std::string ip) {
     udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_socket < 0) return;
 
+    // Set 8MB Receive Buffer
+    int rcv_buf_size = 8 * 1024 * 1024;
+    setsockopt(udp_socket, SOL_SOCKET, SO_RCVBUF, &rcv_buf_size, sizeof(rcv_buf_size));
+
     memset(&target_addr_global, 0, sizeof(target_addr_global));
     target_addr_global.sin_family = AF_INET;
     target_addr_global.sin_port = htons(21118);
@@ -120,6 +128,8 @@ void network_loop(std::string ip) {
     tv.tv_sec = 0;
     tv.tv_usec = 100000;
     setsockopt(udp_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    uint32_t last_complete_frame_id = 0;
 
     while (is_running) {
         ssize_t len = recvfrom(udp_socket, buf, sizeof(buf), 0, nullptr, nullptr);
@@ -158,6 +168,15 @@ void network_loop(std::string ip) {
         frame_buffers[frame_id].chunks[chunk_idx] = payload;
         
         if (frame_buffers[frame_id].chunks.size() == total_chunks) {
+            // Gap Detection
+            if (last_complete_frame_id > 0 && frame_id > last_complete_frame_id + 1) {
+                // Request IDR frame
+                uint8_t req_packet[] = {'D', 'L', 'P', '1', 0x0A};
+                sendto(udp_socket, req_packet, sizeof(req_packet), 0, (struct sockaddr*)&target_addr_global, sizeof(target_addr_global));
+                needs_recovery = true;
+            }
+            last_complete_frame_id = frame_id;
+
             size_t max_offset = 0;
             for (auto const& [idx, chunk] : frame_buffers[frame_id].chunks) {
                 max_offset = std::max(max_offset, (size_t)(idx * 1024 + chunk.size()));

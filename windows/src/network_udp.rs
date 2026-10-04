@@ -14,6 +14,7 @@ const PACKET_HELLO: u8 = 0x01;
 const PACKET_VIDEO: u8 = 0x06;
 const PACKET_INPUT: u8 = 0x07;
 const PACKET_SETTINGS: u8 = 0x09;
+const PACKET_REQUEST_IDR: u8 = 0x0A;
 
 pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
     info!("========================================");
@@ -146,18 +147,33 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
                                 error!("Failed to send UDP chunk: {}", e);
                             }
                             
-                            // Adaptive pacing: 300us for local Wi-Fi, 2500us for Tailscale internet tunnel
-                            let spin_start = std::time::Instant::now();
-                            while spin_start.elapsed().as_micros() < pace_us {
-                                std::hint::spin_loop();
+                            if pace_us == 300 {
+                                // LAN Mode: batch 16 chunks
+                                if chunk_index % 16 == 15 || chunk_index == (total_chunks - 1) as usize {
+                                    let spin_start = std::time::Instant::now();
+                                    while spin_start.elapsed().as_micros() < 50 {
+                                        std::hint::spin_loop();
+                                    }
+                                    tokio::task::yield_now().await;
+                                }
+                            } else {
+                                // Tailscale Mode
+                                let spin_start = std::time::Instant::now();
+                                while spin_start.elapsed().as_micros() < pace_us {
+                                    std::hint::spin_loop();
+                                }
+                                tokio::task::yield_now().await;
                             }
-                            tokio::task::yield_now().await;
                         }
                     }
                 });
             }
             PACKET_INPUT => {
                 crate::input::handle_input_payload(&buf[5..len]);
+            }
+            PACKET_REQUEST_IDR => {
+                crate::capture::FORCE_IDR.store(true, std::sync::atomic::Ordering::Relaxed);
+                info!("Client requested IDR frame via UDP (0x0A)");
             }
             PACKET_SETTINGS => {
                 if len >= 13 {

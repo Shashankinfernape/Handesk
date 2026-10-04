@@ -20,6 +20,7 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SA
 
 pub static TARGET_BITRATE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(2_000_000);
 pub static TARGET_FPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(60);
+pub static FORCE_IDR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
     info!("Starting DXGI Desktop Duplication capture loop");
@@ -164,6 +165,11 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
             current_bitrate = new_bitrate;
             info!("Dynamic Bitrate Change: {} bps", current_bitrate);
             encoder.set_bitrate(current_bitrate);
+        }
+
+        if FORCE_IDR.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            info!("Forcing IDR frame (Requested by client)");
+            encoder.force_idr();
         }
 
         // FPS throttle (user-selectable from Android / Windows UI, default 60)
