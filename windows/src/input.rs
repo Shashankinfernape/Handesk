@@ -46,7 +46,7 @@ pub fn handle_input_payload(payload: &[u8]) {
                 inject_key(vk_code, down);
             }
         }
-        0x05 => { // Quality Settings
+        0x10 => { // Quality Settings
             if payload.len() >= 2 {
                 let quality = payload[1];
                 let new_bitrate = match quality {
@@ -63,7 +63,7 @@ pub fn handle_input_payload(payload: &[u8]) {
                 crate::capture::TARGET_BITRATE.store(new_bitrate, std::sync::atomic::Ordering::Relaxed);
             }
         }
-        0x06 => { // FPS Settings
+        0x11 => { // FPS Settings
             if payload.len() >= 2 {
                 let fps = (payload[1] as u32).clamp(15, 144);
                 crate::capture::TARGET_FPS.store(fps, std::sync::atomic::Ordering::Relaxed);

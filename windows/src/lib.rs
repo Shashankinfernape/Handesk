@@ -36,7 +36,15 @@ pub extern "C" fn start_directlink_backend() {
 
     rt.spawn(async {
         info!("Starting DirectLink Host (DLL Mode)...");
-        let socket = std::sync::Arc::new(tokio::net::UdpSocket::bind("0.0.0.0:21118").await.unwrap());
+        use socket2::Socket;
+        let std_socket = std::net::UdpSocket::bind("0.0.0.0:21118").unwrap();
+        std_socket.set_nonblocking(true).unwrap();
+        
+        let socket2_sock: Socket = std_socket.into();
+        let _ = socket2_sock.set_send_buffer_size(2 * 1024 * 1024);
+        
+        let std_socket: std::net::UdpSocket = socket2_sock.into();
+        let socket = std::sync::Arc::new(tokio::net::UdpSocket::from_std(std_socket).unwrap());
         if let Err(e) = network_udp::start_direct_server(socket).await {
             error!("Server crashed: {:?}", e);
         }

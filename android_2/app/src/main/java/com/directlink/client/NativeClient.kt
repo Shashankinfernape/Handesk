@@ -130,14 +130,14 @@ class NativeClient {
 
     fun sendQualityChange(level: Int) {
         val payload = ByteArray(2)
-        payload[0] = 0x05
+        payload[0] = 0x10
         payload[1] = level.toByte()
         sendInputPacket(payload)
     }
 
     fun sendFpsChange(fps: Int) {
         val payload = ByteArray(2)
-        payload[0] = 0x06
+        payload[0] = 0x11
         payload[1] = fps.toByte()
         sendInputPacket(payload)
     }

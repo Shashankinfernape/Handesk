@@ -1,4 +1,3 @@
-#![windows_subsystem = "windows"]
 
 use anyhow::Result;
 use tracing::{info, error};
@@ -31,13 +30,13 @@ fn main() -> Result<()> {
             .unwrap();
 
         rt.block_on(async {
-            use socket2::{Socket, Domain, Type};
-            use std::net::SocketAddr;
+            use socket2::Socket;
             
-            let socket2_sock = Socket::new(Domain::IPV4, Type::DGRAM, None).unwrap();
-            socket2_sock.set_nonblocking(true).unwrap();
+            let std_socket = std::net::UdpSocket::bind("0.0.0.0:21118").unwrap();
+            std_socket.set_nonblocking(true).unwrap();
+            
+            let socket2_sock: Socket = std_socket.into();
             let _ = socket2_sock.set_send_buffer_size(2 * 1024 * 1024);
-            socket2_sock.bind(&"0.0.0.0:21118".parse::<SocketAddr>().unwrap().into()).unwrap();
             
             let std_socket: std::net::UdpSocket = socket2_sock.into();
             let socket = std::sync::Arc::new(tokio::net::UdpSocket::from_std(std_socket).unwrap());

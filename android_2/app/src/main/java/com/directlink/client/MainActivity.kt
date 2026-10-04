@@ -418,9 +418,9 @@ fun RemoteSessionScreen(
 ) {
     var showToolbar by remember { mutableStateOf(false) }
     var expandedQualityMenu by remember { mutableStateOf(false) }
-    var currentQuality by remember { mutableStateOf("Auto") }
+    var currentQuality by remember { mutableStateOf("1080p HD") }
     var expandedFpsMenu by remember { mutableStateOf(false) }
-    var currentFps by remember { mutableStateOf(60) }
+    var currentFps by remember { mutableStateOf(90) }
     var isPcAudioMuted by remember { mutableStateOf(false) }
     
     val focusRequester = remember { FocusRequester() }
@@ -785,7 +785,7 @@ fun RemoteSessionScreen(
                     // Frame Rate
                     Box {
                         ToolbarIconButton(
-                            icon = Icons.Filled.Refresh,
+                            icon = Icons.Filled.List,
                             label = "${currentFps} FPS",
                             onClick = { expandedFpsMenu = true }
                         )

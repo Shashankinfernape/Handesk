@@ -24,6 +24,7 @@ jmethodID g_onAudioData_method = nullptr;
 std::atomic<bool> is_running(false);
 std::thread network_thread;
 int udp_socket = -1;
+struct sockaddr_in target_addr_global;
 
 AMediaCodec* decoder = nullptr;
 ANativeWindow* window = nullptr;
@@ -79,9 +80,8 @@ void decode_nalu(const std::vector<uint8_t>& data) {
     }
     has_received_idr = true;
 
-    // Use a timeout of 0 to make it non-blocking. If the decoder is full, we simply drop the frame.
-    // Blocking here would stall the UDP network thread and cause massive latency/packet loss!
-    ssize_t in_idx = AMediaCodec_dequeueInputBuffer(decoder, 0);
+    // Wait up to 4ms for decoder space. If it's still full, drop the frame and ask for a fresh keyframe!
+    ssize_t in_idx = AMediaCodec_dequeueInputBuffer(decoder, 4000);
     if (in_idx >= 0) {
         size_t buf_size = 0;
         uint8_t* buf = AMediaCodec_getInputBuffer(decoder, in_idx, &buf_size);
@@ -89,6 +89,10 @@ void decode_nalu(const std::vector<uint8_t>& data) {
             memcpy(buf, data.data(), data.size());
             AMediaCodec_queueInputBuffer(decoder, in_idx, 0, data.size(), current_time_ms() * 1000, 0);
         }
+    } else {
+        LOGE("Decoder full! Dropping frame and requesting IDR!");
+        uint8_t req_packet[] = {'D', 'L', 'P', '1', 0x0A};
+        sendto(udp_socket, req_packet, sizeof(req_packet), 0, (struct sockaddr*)&target_addr_global, sizeof(target_addr_global));
     }
 
     AMediaCodecBufferInfo info;
@@ -111,7 +115,6 @@ void decode_nalu(const std::vector<uint8_t>& data) {
     }
 }
 
-struct sockaddr_in target_addr_global;
 
 void network_loop(std::string ip) {
     JNIEnv* env = nullptr;
@@ -201,13 +204,8 @@ void network_loop(std::string ip) {
                 memcpy(full_frame.data() + (idx * 1024), chunk.data(), chunk.size());
             }
 
-            // Fix C: Skip decoding this frame entirely if a NEWER frame is already arriving!
-            // This prevents decoding useless past frames and stalling the pipeline.
-            if (!frame_buffers.empty() && frame_buffers.rbegin()->first > frame_id) {
-                LOGI("Skipping obsolete frame %u because newer frame %u is already arriving", frame_id, frame_buffers.rbegin()->first);
-            } else {
-                decode_nalu(full_frame);
-            }
+            // Decode frame
+            decode_nalu(full_frame);
             
             // Clean up old frames
             auto it = frame_buffers.begin();
