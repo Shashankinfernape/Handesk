@@ -79,7 +79,9 @@ void decode_nalu(const std::vector<uint8_t>& data) {
     }
     has_received_idr = true;
 
-    ssize_t in_idx = AMediaCodec_dequeueInputBuffer(decoder, 16000);
+    // Use a timeout of 0 to make it non-blocking. If the decoder is full, we simply drop the frame.
+    // Blocking here would stall the UDP network thread and cause massive latency/packet loss!
+    ssize_t in_idx = AMediaCodec_dequeueInputBuffer(decoder, 0);
     if (in_idx >= 0) {
         size_t buf_size = 0;
         uint8_t* buf = AMediaCodec_getInputBuffer(decoder, in_idx, &buf_size);
@@ -199,7 +201,13 @@ void network_loop(std::string ip) {
                 memcpy(full_frame.data() + (idx * 1024), chunk.data(), chunk.size());
             }
 
-            decode_nalu(full_frame);
+            // Fix C: Skip decoding this frame entirely if a NEWER frame is already arriving!
+            // This prevents decoding useless past frames and stalling the pipeline.
+            if (!frame_buffers.empty() && frame_buffers.rbegin()->first > frame_id) {
+                LOGI("Skipping obsolete frame %u because newer frame %u is already arriving", frame_id, frame_buffers.rbegin()->first);
+            } else {
+                decode_nalu(full_frame);
+            }
             
             // Clean up old frames
             auto it = frame_buffers.begin();

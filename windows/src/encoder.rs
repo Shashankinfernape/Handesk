@@ -124,8 +124,8 @@ impl MFEncoder {
                 let var_true = windows::core::VARIANT::from(true);
                 let _ = unsafe { codec_api.SetValue(&windows::Win32::Media::MediaFoundation::CODECAPI_AVLowLatencyMode, &var_true) };
 
-                // Force an IDR Keyframe every 120 frames (2 seconds at 60fps) to prevent constant 4x/sec stutter spikes
-                let var_gop = windows::core::VARIANT::from(120u32);
+                // Force an IDR Keyframe every 60 frames (1 second at 60fps) to prevent drift and correct latency
+                let var_gop = windows::core::VARIANT::from(60u32);
                 let _ = unsafe { codec_api.SetValue(&windows::Win32::Media::MediaFoundation::CODECAPI_AVEncMPVGOPSize, &var_gop) };
 
                 // Force H.264 Baseline Profile (66) so Android tablets can decode it without crashing!
