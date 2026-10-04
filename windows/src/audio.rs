@@ -71,24 +71,50 @@ pub async fn start_audio_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
     stream.play()?;
     info!("Audio Loopback Started! Encoding with Opus at 64kbps (internet-optimized)");
 
-    let mut accumulator: Vec<i16> = Vec::with_capacity(OPUS_FRAME_SIZE * 4);
+    let mut raw_accumulator: Vec<i16> = Vec::with_capacity(OPUS_FRAME_SIZE * 8);
     let mut opus_buf = vec![0u8; MAX_PACKET_BYTES];
+    // stream_config.sample_rate is a u32 primitive in this cpal version
+    let sample_rate_val = stream_config.sample_rate; 
+    let ratio = sample_rate_val as f64 / 48000.0;
+    let mut raw_idx: f64 = 0.0;
 
     loop {
         match pcm_rx.try_recv() {
             Ok(chunk) => {
-                accumulator.extend_from_slice(&chunk);
+                raw_accumulator.extend_from_slice(&chunk);
 
-                while accumulator.len() >= OPUS_FRAME_SIZE {
-                    let frame = &accumulator[..OPUS_FRAME_SIZE];
-                    match encoder.encode_s16(frame, OPUS_FRAME_SAMPLES, &mut opus_buf) {
+                while (raw_idx + ratio * OPUS_FRAME_SAMPLES as f64).ceil() as usize <= raw_accumulator.len() / 2 {
+                    let mut frame = vec![0i16; OPUS_FRAME_SIZE];
+                    for i in 0..OPUS_FRAME_SAMPLES {
+                        let in_idx = raw_idx + (i as f64 * ratio);
+                        let idx1 = in_idx.floor() as usize;
+                        let idx2 = (idx1 + 1).min((raw_accumulator.len() / 2) - 1);
+                        let frac = in_idx - idx1 as f64;
+                        
+                        let l1 = raw_accumulator[idx1 * 2] as f64;
+                        let l2 = raw_accumulator[idx2 * 2] as f64;
+                        frame[i * 2] = (l1 + frac * (l2 - l1)) as i16;
+                        
+                        let r1 = raw_accumulator[idx1 * 2 + 1] as f64;
+                        let r2 = raw_accumulator[idx2 * 2 + 1] as f64;
+                        frame[i * 2 + 1] = (r1 + frac * (r2 - r1)) as i16;
+                    }
+
+                    match encoder.encode_s16(&frame, OPUS_FRAME_SAMPLES, &mut opus_buf) {
                         Ok(n) if n > 0 => {
                             let _ = tx.try_send(opus_buf[..n].to_vec());
                         }
                         Ok(_) => {}
                         Err(e) => error!("Opus encode error: {:?}", e),
                     }
-                    accumulator.drain(..OPUS_FRAME_SIZE);
+                    
+                    raw_idx += ratio * OPUS_FRAME_SAMPLES as f64;
+                }
+                
+                let consumed = raw_idx.floor() as usize;
+                if consumed > 0 {
+                    raw_accumulator.drain(..consumed * 2);
+                    raw_idx -= consumed as f64;
                 }
             }
             Err(_) => {

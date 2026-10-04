@@ -14,10 +14,15 @@ typedef BackendCall = void Function();
 typedef SettingsFunc = Void Function(Uint32 fps, Uint32 bitrate);
 typedef SettingsCall = void Function(int fps, int bitrate);
 
+typedef GetSettingsFunc = Uint32 Function();
+typedef GetSettingsCall = int Function();
+
 late DynamicLibrary dylib;
 late BackendCall startBackend;
 late BackendCall stopBackend;
 late SettingsCall setSettings;
+late GetSettingsCall getCurrentFps;
+late GetSettingsCall getCurrentBitrate;
 
 void main() {
   try {
@@ -25,6 +30,8 @@ void main() {
     startBackend = dylib.lookupFunction<BackendFunc, BackendCall>('start_directlink_backend');
     stopBackend = dylib.lookupFunction<BackendFunc, BackendCall>('stop_directlink_backend');
     setSettings = dylib.lookupFunction<SettingsFunc, SettingsCall>('set_quality_settings');
+    getCurrentFps = dylib.lookupFunction<GetSettingsFunc, GetSettingsCall>('get_current_fps');
+    getCurrentBitrate = dylib.lookupFunction<GetSettingsFunc, GetSettingsCall>('get_current_bitrate');
     
     // Auto-start backend on launch
     startBackend();

@@ -12,6 +12,7 @@
 #include <atomic>
 #include <vector>
 #include <map>
+#include <chrono>
 
 #define LOG_TAG "NativeClient"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -25,6 +26,17 @@ std::atomic<bool> is_running(false);
 std::thread network_thread;
 int udp_socket = -1;
 struct sockaddr_in target_addr_global;
+
+// Rate-limited keyframe request: at most one every 300ms, so packet loss can't cause a keyframe storm.
+static void send_idr_request() {
+    static std::chrono::steady_clock::time_point last_req;
+    auto now = std::chrono::steady_clock::now();
+    if (now - last_req < std::chrono::milliseconds(300)) return;
+    last_req = now;
+    if (udp_socket < 0) return;
+    uint8_t req_packet[] = {'D', 'L', 'P', '1', 0x0A};
+    sendto(udp_socket, req_packet, sizeof(req_packet), 0, (struct sockaddr*)&target_addr_global, sizeof(target_addr_global));
+}
 
 AMediaCodec* decoder = nullptr;
 ANativeWindow* window = nullptr;
@@ -71,28 +83,36 @@ void decode_nalu(const std::vector<uint8_t>& data) {
         }
     }
 
-    if (!has_received_idr && !is_keyframe) return;
-    
-    // Only flush if we are recovering from a dropped frame
-    if (is_keyframe && needs_recovery) {
-        AMediaCodec_flush(decoder);
-        needs_recovery = false;
+    bool skip_input = false;
+    if (!has_received_idr && !is_keyframe) {
+        skip_input = true;
+    } else if (needs_recovery && !is_keyframe) {
+        send_idr_request();
+        skip_input = true;
     }
-    has_received_idr = true;
 
-    // Wait up to 4ms for decoder space. If it's still full, drop the frame and ask for a fresh keyframe!
-    ssize_t in_idx = AMediaCodec_dequeueInputBuffer(decoder, 4000);
-    if (in_idx >= 0) {
-        size_t buf_size = 0;
-        uint8_t* buf = AMediaCodec_getInputBuffer(decoder, in_idx, &buf_size);
-        if (buf && buf_size >= data.size()) {
-            memcpy(buf, data.data(), data.size());
-            AMediaCodec_queueInputBuffer(decoder, in_idx, 0, data.size(), current_time_ms() * 1000, 0);
+    if (!skip_input) {
+        // Only flush if we are recovering from a dropped frame
+        if (is_keyframe && needs_recovery) {
+            AMediaCodec_flush(decoder);
+            needs_recovery = false;
         }
-    } else {
-        LOGE("Decoder full! Dropping frame and requesting IDR!");
-        uint8_t req_packet[] = {'D', 'L', 'P', '1', 0x0A};
-        sendto(udp_socket, req_packet, sizeof(req_packet), 0, (struct sockaddr*)&target_addr_global, sizeof(target_addr_global));
+        has_received_idr = true;
+
+        // Wait up to 4ms for decoder space. If it's still full, drop the frame and ask for a fresh keyframe!
+        ssize_t in_idx = AMediaCodec_dequeueInputBuffer(decoder, 4000);
+        if (in_idx >= 0) {
+            size_t buf_size = 0;
+            uint8_t* buf = AMediaCodec_getInputBuffer(decoder, in_idx, &buf_size);
+            if (buf && buf_size >= data.size()) {
+                memcpy(buf, data.data(), data.size());
+                AMediaCodec_queueInputBuffer(decoder, in_idx, 0, data.size(), current_time_ms() * 1000, 0);
+            }
+        } else {
+            LOGE("Decoder full! Dropping frame and requesting IDR!");
+            needs_recovery = true;
+            send_idr_request();
+        }
     }
 
     AMediaCodecBufferInfo info;
@@ -187,9 +207,8 @@ void network_loop(std::string ip) {
         if (frame_buffers[frame_id].chunks.size() == total_chunks) {
             // Gap Detection
             if (last_complete_frame_id > 0 && frame_id > last_complete_frame_id + 1) {
-                // Request IDR frame
-                uint8_t req_packet[] = {'D', 'L', 'P', '1', 0x0A};
-                sendto(udp_socket, req_packet, sizeof(req_packet), 0, (struct sockaddr*)&target_addr_global, sizeof(target_addr_global));
+                // Request IDR frame (rate-limited)
+                send_idr_request();
                 needs_recovery = true;
             }
             last_complete_frame_id = frame_id;

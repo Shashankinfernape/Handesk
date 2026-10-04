@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../main.dart'; // To access setSettings
 
@@ -9,8 +10,41 @@ class QualitySettingsWidget extends StatefulWidget {
 }
 
 class _QualitySettingsWidgetState extends State<QualitySettingsWidget> {
-  int _selectedFps = 60;
-  int _selectedBitrate = 2000000; // matches backend default
+  int _selectedFps = 90;
+  int _selectedBitrate = 15000000; // 1080p default
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _pollSettings();
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      _pollSettings();
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _pollSettings() {
+    try {
+      int hostFps = getCurrentFps();
+      int hostBitrate = getCurrentBitrate();
+      if (hostFps != 0 && hostBitrate != 0) {
+        if (hostFps != _selectedFps || hostBitrate != _selectedBitrate) {
+          setState(() {
+            _selectedFps = hostFps;
+            _selectedBitrate = hostBitrate;
+          });
+        }
+      }
+    } catch (e) {
+      // Ignore errors if backend isn't ready
+    }
+  }
 
   void _updateSettings() {
     try {

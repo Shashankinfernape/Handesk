@@ -159,6 +159,8 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
     let mut current_bitrate = TARGET_BITRATE.load(std::sync::atomic::Ordering::Relaxed);
     
     let mut frame_start = tokio::time::Instant::now();
+    let mut last_idr = std::time::Instant::now();
+    let mut last_sent = std::time::Instant::now();
     loop {
         let new_bitrate = TARGET_BITRATE.load(std::sync::atomic::Ordering::Relaxed);
         if new_bitrate != current_bitrate {
@@ -167,20 +169,31 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
             encoder.set_bitrate(current_bitrate);
         }
 
+        // Rate-limit client IDR requests: at most one keyframe per 500ms.
+        // Without this, every lost packet triggers a huge keyframe, which causes more loss -> keyframe storm.
         if FORCE_IDR.swap(false, std::sync::atomic::Ordering::Relaxed) {
-            info!("Forcing IDR frame (Requested by client)");
-            encoder.force_idr();
+            if last_idr.elapsed() >= Duration::from_millis(500) {
+                info!("Forcing IDR frame (Requested by client)");
+                encoder.force_idr();
+                last_idr = std::time::Instant::now();
+            }
         }
 
-        // FPS throttle (user-selectable from Android / Windows UI, default 60)
+        // FPS throttle (user-selectable from Android / Windows UI)
         let fps = TARGET_FPS.load(std::sync::atomic::Ordering::Relaxed).clamp(15, 144) as u32;
-        let timeout_ms = 1000 / fps;
         let frame_budget = Duration::from_micros(1_000_000 / fps as u64);
+
+        // Pace BEFORE grabbing, so a grabbed frame is encoded immediately (no sleeping on a stale frame).
+        let elapsed = frame_start.elapsed();
+        if elapsed < frame_budget {
+            tokio::time::sleep(frame_budget - elapsed).await;
+        }
 
         let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut desktop_resource: Option<IDXGIResource> = None;
         
-        // Let the GPU block natively for up to timeout_ms. This prevents high CPU usage and uses perfect hardware pacing.
+        // Wait up to one frame slot for a new desktop frame.
+        let timeout_ms = (1000 / fps).max(1);
         let res = unsafe {
             duplication.AcquireNextFrame(timeout_ms, &mut frame_info, &mut desktop_resource)
         };
@@ -214,17 +227,16 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
                     error!("DXGI AcquireNextFrame failed: {:?}", e);
                     break Err(anyhow!("DXGI Error: {:?}", e));
                 }
-                // Timeout = screen didn't change. Fall through and re-encode the existing buffer.
-                // This keeps the stream alive and the Android decoder fed on static screens.
+                // Screen didn't change. Only re-send as a keepalive every 100ms.
+                // Re-encoding duplicates at every slot causes judder when target FPS > monitor refresh rate.
+                if last_sent.elapsed() < Duration::from_millis(100) {
+                    continue;
+                }
             }
         }
 
-        // FPS throttle: keeps stream smooth without flooding the network
-        let elapsed = frame_start.elapsed();
-        if elapsed < frame_budget {
-            tokio::time::sleep(frame_budget - elapsed).await;
-        }
         frame_start = tokio::time::Instant::now();
+        last_sent = std::time::Instant::now();
 
         // Encode and send — CRITICAL: use try_send to NEVER block!
         // If the channel is full (sender is busy), DROP the stale frame instantly.

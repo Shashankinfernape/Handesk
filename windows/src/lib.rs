@@ -68,3 +68,13 @@ pub extern "C" fn set_quality_settings(fps: u32, bitrate: u32) {
     capture::TARGET_FPS.store(fps, std::sync::atomic::Ordering::Relaxed);
     capture::TARGET_BITRATE.store(bitrate, std::sync::atomic::Ordering::Relaxed);
 }
+
+#[no_mangle]
+pub extern "C" fn get_current_fps() -> u32 {
+    capture::TARGET_FPS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[no_mangle]
+pub extern "C" fn get_current_bitrate() -> u32 {
+    capture::TARGET_BITRATE.load(std::sync::atomic::Ordering::Relaxed)
+}

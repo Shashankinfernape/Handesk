@@ -38,14 +38,8 @@ class NativeClient {
             // Decode Opus → PCM i16 stereo
             val samplesDecoded = opusDecoder.decode(opusData, 0, opusData.size, pcmBuffer, 0, 5760, false)
             if (samplesDecoded > 0) {
-                // Convert ShortArray → ByteArray (little-endian)
-                val pcmBytes = ByteArray(samplesDecoded * 2 * 2) // samples * channels * bytes_per_sample
-                for (i in 0 until samplesDecoded * 2) {
-                    val s = pcmBuffer[i]
-                    pcmBytes[i * 2] = (s.toInt() and 0xFF).toByte()
-                    pcmBytes[i * 2 + 1] = ((s.toInt() shr 8) and 0xFF).toByte()
-                }
-                audioTrack.write(pcmBytes, 0, pcmBytes.size)
+                // Write directly using the ShortArray (non-blocking) so we don't stall the UDP video receiver!
+                audioTrack.write(pcmBuffer, 0, samplesDecoded * 2, AudioTrack.WRITE_NON_BLOCKING)
             }
         } catch (e: Exception) {
             android.util.Log.e("NativeClient", "Opus decode error: ${e.message}")
