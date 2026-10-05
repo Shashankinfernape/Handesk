@@ -60,9 +60,9 @@ pub fn handle_input_payload(payload: &[u8]) {
                     crate::capture::AUTO_BITRATE_ENABLED
                         .store(true, std::sync::atomic::Ordering::Relaxed);
                     crate::capture::CONFIGURED_BITRATE
-                        .store(15_000_000, std::sync::atomic::Ordering::Relaxed);
+                        .store(8_000_000, std::sync::atomic::Ordering::Relaxed);
                     crate::capture::TARGET_BITRATE
-                        .store(12_000_000, std::sync::atomic::Ordering::Relaxed);
+                        .store(7_000_000, std::sync::atomic::Ordering::Relaxed);
                 } else {
                     // Fixed manual quality: Lock quality and disable auto-downscaling
                     crate::capture::AUTO_BITRATE_ENABLED
@@ -70,13 +70,13 @@ pub fn handle_input_payload(payload: &[u8]) {
                     let new_bitrate = match quality {
                         0 => 500_000,    // 144p
                         1 => 1_000_000,  // 240p
-                        2 => 3_000_000,  // 360p
-                        3 => 5_000_000,  // 480p
-                        4 => 10_000_000, // 720p
-                        5 => 15_000_000, // 1080p
-                        6 => 25_000_000, // 1440p
-                        7 => 50_000_000, // Source (Lossless)
-                        _ => 15_000_000,
+                        2 => 2_000_000,  // 360p
+                        3 => 3_500_000,  // 480p
+                        4 => 5_000_000,  // 720p
+                        5 => 8_000_000,  // 1080p
+                        6 => 14_000_000, // 1440p
+                        7 => 22_000_000, // Source (Lossless)
+                        _ => 8_000_000,
                     };
                     crate::capture::CONFIGURED_BITRATE
                         .store(new_bitrate, std::sync::atomic::Ordering::Relaxed);

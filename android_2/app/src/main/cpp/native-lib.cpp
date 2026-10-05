@@ -69,7 +69,7 @@ void decode_nalu(const std::vector<uint8_t>& data) {
     std::lock_guard<std::mutex> lock(decoder_mutex);
     if (!decoder) return;
 
-    // Detect Keyframe (VPS 32, SPS 33, PPS 34, IDR 19/20)
+    // Detect Keyframe (VPS 32, SPS 33, PPS 34, IDR 19/20, CRA 21)
     bool is_keyframe = false;
     for (size_t i = 0; i < data.size() - 4; ++i) {
         bool is_4byte = (data[i] == 0 && data[i+1] == 0 && data[i+2] == 0 && data[i+3] == 1);
@@ -77,11 +77,11 @@ void decode_nalu(const std::vector<uint8_t>& data) {
         
         if (is_4byte && i + 4 < data.size()) {
             int nalu_type = (data[i + 4] & 0x7E) >> 1;
-            if (nalu_type == 19 || nalu_type == 20 || nalu_type == 32) is_keyframe = true;
+            if (nalu_type == 19 || nalu_type == 20 || nalu_type == 21 || nalu_type == 32) is_keyframe = true;
             i += 3;
         } else if (is_3byte && i + 3 < data.size()) {
             int nalu_type = (data[i + 3] & 0x7E) >> 1;
-            if (nalu_type == 19 || nalu_type == 20 || nalu_type == 32) is_keyframe = true;
+            if (nalu_type == 19 || nalu_type == 20 || nalu_type == 21 || nalu_type == 32) is_keyframe = true;
             i += 2;
         }
     }
@@ -102,19 +102,17 @@ void decode_nalu(const std::vector<uint8_t>& data) {
         }
         has_received_idr = true;
 
-        // Wait up to 4ms for decoder space. If it's still full, drop the frame and ask for a fresh keyframe!
-        ssize_t in_idx = AMediaCodec_dequeueInputBuffer(decoder, 4000);
+        // Wait up to 10ms for decoder space.
+        ssize_t in_idx = AMediaCodec_dequeueInputBuffer(decoder, 10000);
         if (in_idx >= 0) {
             size_t buf_size = 0;
             uint8_t* buf = AMediaCodec_getInputBuffer(decoder, in_idx, &buf_size);
             if (buf && buf_size >= data.size()) {
                 memcpy(buf, data.data(), data.size());
                 AMediaCodec_queueInputBuffer(decoder, in_idx, 0, data.size(), current_time_ms() * 1000, 0);
+            } else if (buf) {
+                LOGE("Input buffer too small: buf_size=%zu, frame_len=%zu", buf_size, data.size());
             }
-        } else {
-            LOGE("Decoder full! Dropping frame and requesting IDR!");
-            needs_recovery = true;
-            send_idr_request();
         }
     }
 
@@ -189,6 +187,10 @@ void network_loop(std::string ip) {
     sendto(udp_socket, hello_packet, sizeof(hello_packet), 0, (struct sockaddr*)&target_addr_global, sizeof(target_addr_global));
     sendto(udp_socket, hello_packet, sizeof(hello_packet), 0, (struct sockaddr*)&target_addr_global, sizeof(target_addr_global));
 
+    // Request immediate keyframe to kickstart decoding
+    uint8_t idr_packet[] = {'D', 'L', 'P', '1', 0x0A};
+    sendto(udp_socket, idr_packet, sizeof(idr_packet), 0, (struct sockaddr*)&target_addr_global, sizeof(target_addr_global));
+
     std::map<uint32_t, FrameBuffer> frame_buffers;
     uint8_t buf[2048];
 
@@ -198,8 +200,18 @@ void network_loop(std::string ip) {
     setsockopt(udp_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     uint32_t last_complete_frame_id = 0;
+    auto last_initial_req = std::chrono::steady_clock::now();
 
     while (is_running) {
+        // If stream hasn't started yet (waiting for first IDR), re-request every 400ms
+        if (!has_received_idr) {
+            auto now_mono = std::chrono::steady_clock::now();
+            if (now_mono - last_initial_req > std::chrono::milliseconds(400)) {
+                last_initial_req = now_mono;
+                send_idr_request();
+            }
+        }
+
         ssize_t len = recvfrom(udp_socket, buf, sizeof(buf), 0, nullptr, nullptr);
         if (len < 5) continue;
 
@@ -253,13 +265,12 @@ void network_loop(std::string ip) {
         
         frame_buffers[frame_id].chunks[chunk_idx] = payload;
 
-        // Evict expired incomplete frames (older than 100ms) over WAN to prevent jitter & freeze
+        // Evict expired incomplete frames (older than 350ms) over WAN to avoid memory accumulation
         if (frame_buffers.size() > 10) {
             auto it = frame_buffers.begin();
             while (it != frame_buffers.end()) {
-                if (now - it->second.timestamp_ms > 100) {
+                if (now - it->second.timestamp_ms > 350) {
                     it = frame_buffers.erase(it);
-                    send_idr_request();
                 } else {
                     ++it;
                 }
@@ -332,6 +343,7 @@ Java_com_directlink_client_NativeClient_connectNative(JNIEnv* env, jobject thiz,
     AMediaFormat_setString(format, AMEDIAFORMAT_KEY_MIME, "video/hevc");
     AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, 1600);
     AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_HEIGHT, 900);
+    AMediaFormat_setInt32(format, "max-input-size", 512 * 1024);
     
     // Low latency mode
     AMediaFormat_setInt32(format, "low-latency", 1);

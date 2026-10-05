@@ -492,12 +492,11 @@ fun RemoteSessionScreen(
                     500_000 -> "144p"
                     1_000_000 -> "240p"
                     2_000_000 -> "360p"
-                    3_000_000 -> "360p"
-                    5_000_000 -> "480p"
-                    10_000_000 -> "720p"
-                    15_000_000 -> "1080p HD"
-                    25_000_000 -> "1440p HD"
-                    50_000_000 -> "Source (Lossless)"
+                    3_500_000 -> "480p"
+                    5_000_000 -> "720p"
+                    7_000_000, 8_000_000 -> "1080p HD"
+                    14_000_000 -> "1440p HD"
+                    22_000_000 -> "Source (Lossless)"
                     else -> ""
                 }
                 if (matchingQuality.isNotEmpty() && currentQuality != matchingQuality) {

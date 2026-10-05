@@ -21,7 +21,7 @@ const PACKET_SETTINGS: u8 = 0x09;
 const PACKET_REQUEST_IDR: u8 = 0x0A;
 
 static MIN_RTT_MS: AtomicU32 = AtomicU32::new(9999);
-static SMOOTHED_RTT_MS: AtomicU32 = AtomicU32::new(10);
+static SMOOTHED_RTT_MS: AtomicU32 = AtomicU32::new(50);
 static CONSECUTIVE_CLEAN: AtomicU32 = AtomicU32::new(0);
 static LAST_RTT_RESET: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
 
@@ -65,7 +65,7 @@ pub fn handle_rtt_pong(rtt_ms: u32) {
 
     if is_congested {
         CONSECUTIVE_CLEAN.store(0, Ordering::Relaxed);
-        let backed_off = (current_bitrate * 85 / 100).max(5_000_000);
+        let backed_off = (current_bitrate * 85 / 100).max(4_000_000);
         if backed_off < current_bitrate {
             crate::capture::TARGET_BITRATE.store(backed_off, Ordering::Relaxed);
             info!("WAN Bufferbloat detected (RTT: {}ms, min: {}ms). Throttling bitrate: {} -> {} bps", 
@@ -118,9 +118,9 @@ pub fn broadcast_video_frame(nalu: &[u8]) {
         let payload = &packet_buf[..total_packet_len];
 
         // Adaptive micro-pacing for multi-packet bursts:
-        // 20 µs on LAN, dynamically scaled to 60 µs on WAN to eliminate ISP bufferbloat and packet drops
+        // 20 µs on LAN, dynamically scaled to 45 µs on WAN to eliminate ISP bufferbloat and packet drops
         if total_chunks > 4 && chunk_index > 0 {
-            let pace_micros = if SMOOTHED_RTT_MS.load(Ordering::Relaxed) > 20 { 60 } else { 20 };
+            let pace_micros = if SMOOTHED_RTT_MS.load(Ordering::Relaxed) > 20 { 45 } else { 20 };
             let spin_start = std::time::Instant::now();
             while spin_start.elapsed().as_micros() < pace_micros {
                 std::hint::spin_loop();

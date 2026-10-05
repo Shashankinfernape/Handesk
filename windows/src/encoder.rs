@@ -9,9 +9,9 @@ fn pack_ratio(high: u32, low: u32) -> u64 {
     ((high as u64) << 32) | (low as u64)
 }
 
-/// VBV buffer size in bits: ~2 frames worth at 60 FPS (e.g. 8 Mbps -> ~33 KB max frame).
+/// VBV buffer size in bits: strictly capped (~30 KB) so IDR keyframes fit in <= 35 UDP packets over WAN.
 fn vbv_bits(bitrate: u32) -> u32 {
-    (bitrate / 60).saturating_mul(2).max(200_000)
+    (bitrate / 60).saturating_mul(2).clamp(180_000, 240_000)
 }
 
 pub struct MFEncoder {
@@ -86,7 +86,7 @@ impl MFEncoder {
             mt_out.SetUINT64(&MF_MT_FRAME_SIZE, pack_ratio(width, height))?;
             mt_out.SetUINT64(&MF_MT_FRAME_RATE, pack_ratio(60, 1))?;
             mt_out.SetUINT32(&MF_MT_INTERLACE_MODE, 2)?;
-            let default_bitrate = crate::capture::TARGET_BITRATE.load(std::sync::atomic::Ordering::Relaxed).max(10_000_000);
+            let default_bitrate = crate::capture::TARGET_BITRATE.load(std::sync::atomic::Ordering::Relaxed);
             mt_out.SetUINT32(&MF_MT_AVG_BITRATE, default_bitrate)?;
             transform.SetOutputType(0, &mt_out, 0)?;
 
@@ -117,10 +117,6 @@ impl MFEncoder {
                 let var_buf = windows::core::VARIANT::from(vbv_bits(default_bitrate));
                 let hr = codec_api.SetValue(&CODECAPI_AVEncCommonBufferSize, &var_buf);
                 info!("VBV buffer cap set: {} bits ({:?}) for {} bps", vbv_bits(default_bitrate), hr, default_bitrate);
-
-                // High quality visual tuning (75/100)
-                let var_quality = windows::core::VARIANT::from(75u32);
-                let _ = codec_api.SetValue(&CODECAPI_AVEncCommonQualityVsSpeed, &var_quality);
             }
 
             // 4. Configure Input Type (ARGB32 matches DXGI desktop format natively on RTX 2060)
