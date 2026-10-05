@@ -54,8 +54,7 @@ class NativeClient {
     }
 
     suspend fun connectToHost(localIp: String, publicAddr: String = ""): String? = withContext(Dispatchers.IO) {
-        val host = if (localIp.contains(":")) localIp.substringBefore(":") else localIp
-        activeIp = host
+        activeIp = localIp.trim()
         isConnected = true
         null
     }

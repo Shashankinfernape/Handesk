@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <unistd.h>
 #include <thread>
 #include <atomic>
@@ -28,7 +29,7 @@ std::thread network_thread;
 int udp_socket = -1;
 struct sockaddr_in target_addr_global;
 
-// Rate-limited keyframe request: at most one every 300ms, so packet loss can't cause a keyframe storm.
+// Rate-limited keyframe request: at most one every 300ms, with redundant transmission for WAN packet loss
 static void send_idr_request() {
     static std::chrono::steady_clock::time_point last_req;
     auto now = std::chrono::steady_clock::now();
@@ -36,6 +37,7 @@ static void send_idr_request() {
     last_req = now;
     if (udp_socket < 0) return;
     uint8_t req_packet[] = {'D', 'L', 'P', '1', 0x0A};
+    sendto(udp_socket, req_packet, sizeof(req_packet), 0, (struct sockaddr*)&target_addr_global, sizeof(target_addr_global));
     sendto(udp_socket, req_packet, sizeof(req_packet), 0, (struct sockaddr*)&target_addr_global, sizeof(target_addr_global));
 }
 
@@ -154,13 +156,37 @@ void network_loop(std::string ip) {
     int tos = 0xB8;
     setsockopt(udp_socket, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
 
+    std::string host = ip;
+    int port = 21118;
+    size_t colon_pos = ip.find(':');
+    if (colon_pos != std::string::npos) {
+        host = ip.substr(0, colon_pos);
+        try {
+            port = std::stoi(ip.substr(colon_pos + 1));
+        } catch (...) {
+            port = 21118;
+        }
+    }
+
     memset(&target_addr_global, 0, sizeof(target_addr_global));
     target_addr_global.sin_family = AF_INET;
-    target_addr_global.sin_port = htons(21118);
-    inet_pton(AF_INET, ip.c_str(), &target_addr_global.sin_addr);
+    target_addr_global.sin_port = htons(port);
 
-    // Send HELLO packet
+    // Resolve hostname, DDNS domain, or dotted IP
+    struct addrinfo hints{}, *res = nullptr;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    std::string port_str = std::to_string(port);
+    if (getaddrinfo(host.c_str(), port_str.c_str(), &hints, &res) == 0 && res != nullptr) {
+        memcpy(&target_addr_global, res->ai_addr, sizeof(target_addr_global));
+        freeaddrinfo(res);
+    } else {
+        inet_pton(AF_INET, host.c_str(), &target_addr_global.sin_addr);
+    }
+
+    // Send HELLO packet (sent twice for WAN UDP packet reliability)
     uint8_t hello_packet[] = {'D', 'L', 'P', '1', 0x01};
+    sendto(udp_socket, hello_packet, sizeof(hello_packet), 0, (struct sockaddr*)&target_addr_global, sizeof(target_addr_global));
     sendto(udp_socket, hello_packet, sizeof(hello_packet), 0, (struct sockaddr*)&target_addr_global, sizeof(target_addr_global));
 
     std::map<uint32_t, FrameBuffer> frame_buffers;

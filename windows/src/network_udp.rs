@@ -111,10 +111,12 @@ pub fn broadcast_video_frame(nalu: &[u8]) {
         let total_packet_len = 15 + chunk.len();
         let payload = &packet_buf[..total_packet_len];
 
-        // Micro-pacing for multi-packet bursts (prevents Wi-Fi AP queue overflow on keyframes)
+        // Adaptive micro-pacing for multi-packet bursts:
+        // 20 µs on LAN, dynamically scaled to 60 µs on WAN to eliminate ISP bufferbloat and packet drops
         if total_chunks > 4 && chunk_index > 0 {
+            let pace_micros = if SMOOTHED_RTT_MS.load(Ordering::Relaxed) > 20 { 60 } else { 20 };
             let spin_start = std::time::Instant::now();
-            while spin_start.elapsed().as_micros() < 20 {
+            while spin_start.elapsed().as_micros() < pace_micros {
                 std::hint::spin_loop();
             }
         }
