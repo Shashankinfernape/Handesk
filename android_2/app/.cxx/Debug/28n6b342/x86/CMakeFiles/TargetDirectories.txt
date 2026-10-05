@@ -1,3 +1,0 @@
-C:/Users/user/Desktop/El projecto/Anydesk copy/android_2/app/.cxx/Debug/28n6b342/x86/CMakeFiles/native-lib.dir
-C:/Users/user/Desktop/El projecto/Anydesk copy/android_2/app/.cxx/Debug/28n6b342/x86/CMakeFiles/edit_cache.dir
-C:/Users/user/Desktop/El projecto/Anydesk copy/android_2/app/.cxx/Debug/28n6b342/x86/CMakeFiles/rebuild_cache.dir
