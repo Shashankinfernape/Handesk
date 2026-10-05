@@ -470,6 +470,7 @@ fun RemoteSessionScreen(
     var showToolbar by remember { mutableStateOf(false) }
     var expandedQualityMenu by remember { mutableStateOf(false) }
     var currentQuality by remember { mutableStateOf("1080p HD") }
+    var isAutoMode by remember { mutableStateOf(false) }
     var expandedFpsMenu by remember { mutableStateOf(false) }
     var currentFps by remember { mutableStateOf(90) }
     var isPcAudioMuted by remember { mutableStateOf(false) }
@@ -479,24 +480,29 @@ fun RemoteSessionScreen(
     val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
 
     LaunchedEffect(networkClient) {
+        // Enforce 1080p HD (15 Mbps) default quality on stream start
+        networkClient.sendQualityChange(5)
+
         networkClient.onStatusUpdateListener = { newFps, newBitrate ->
             if (currentFps != newFps) {
                 currentFps = newFps
             }
-            val matchingQuality = when (newBitrate) {
-                500_000 -> "144p"
-                1_000_000 -> "240p"
-                2_000_000 -> "360p" // Fallback map
-                3_000_000 -> "360p"
-                5_000_000 -> "480p"
-                10_000_000 -> "720p"
-                15_000_000 -> "1080p HD"
-                25_000_000 -> "1440p HD"
-                50_000_000 -> "Source (Lossless)"
-                else -> ""
-            }
-            if (matchingQuality.isNotEmpty() && currentQuality != matchingQuality) {
-                currentQuality = matchingQuality
+            if (isAutoMode) {
+                val matchingQuality = when (newBitrate) {
+                    500_000 -> "144p"
+                    1_000_000 -> "240p"
+                    2_000_000 -> "360p"
+                    3_000_000 -> "360p"
+                    5_000_000 -> "480p"
+                    10_000_000 -> "720p"
+                    15_000_000 -> "1080p HD"
+                    25_000_000 -> "1440p HD"
+                    50_000_000 -> "Source (Lossless)"
+                    else -> ""
+                }
+                if (matchingQuality.isNotEmpty() && currentQuality != matchingQuality) {
+                    currentQuality = matchingQuality
+                }
             }
         }
     }
@@ -830,7 +836,7 @@ fun RemoteSessionScreen(
                                 "360p" to 2,
                                 "240p" to 1,
                                 "144p" to 0,
-                                "Auto" to 4
+                                "Auto" to 8
                             )
                             options.forEach { (label, level) ->
                                 DropdownMenuItem(
@@ -847,6 +853,7 @@ fun RemoteSessionScreen(
                                     },
                                     onClick = {
                                         currentQuality = label
+                                        isAutoMode = (level == 8)
                                         networkClient.sendQualityChange(level)
                                         expandedQualityMenu = false
                                         showToolbar = false

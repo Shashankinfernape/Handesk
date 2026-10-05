@@ -55,19 +55,34 @@ pub fn handle_input_payload(payload: &[u8]) {
             // Quality Settings
             if payload.len() >= 2 {
                 let quality = payload[1];
-                let new_bitrate = match quality {
-                    0 => 500_000,    // 144p
-                    1 => 1_000_000,  // 240p
-                    2 => 3_000_000,  // 360p
-                    3 => 5_000_000,  // 480p
-                    4 => 10_000_000, // 720p
-                    5 => 15_000_000, // 1080p
-                    6 => 25_000_000, // 1440p
-                    7 => 50_000_000, // Source (Lossless)
-                    _ => 5_000_000,
-                };
-                crate::capture::TARGET_BITRATE
-                    .store(new_bitrate, std::sync::atomic::Ordering::Relaxed);
+                if quality == 8 {
+                    // Auto adaptive mode explicitly requested by user
+                    crate::capture::AUTO_BITRATE_ENABLED
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                    crate::capture::CONFIGURED_BITRATE
+                        .store(15_000_000, std::sync::atomic::Ordering::Relaxed);
+                    crate::capture::TARGET_BITRATE
+                        .store(12_000_000, std::sync::atomic::Ordering::Relaxed);
+                } else {
+                    // Fixed manual quality: Lock quality and disable auto-downscaling
+                    crate::capture::AUTO_BITRATE_ENABLED
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
+                    let new_bitrate = match quality {
+                        0 => 500_000,    // 144p
+                        1 => 1_000_000,  // 240p
+                        2 => 3_000_000,  // 360p
+                        3 => 5_000_000,  // 480p
+                        4 => 10_000_000, // 720p
+                        5 => 15_000_000, // 1080p
+                        6 => 25_000_000, // 1440p
+                        7 => 50_000_000, // Source (Lossless)
+                        _ => 15_000_000,
+                    };
+                    crate::capture::CONFIGURED_BITRATE
+                        .store(new_bitrate, std::sync::atomic::Ordering::Relaxed);
+                    crate::capture::TARGET_BITRATE
+                        .store(new_bitrate, std::sync::atomic::Ordering::Relaxed);
+                }
             }
         }
         0x11 => {

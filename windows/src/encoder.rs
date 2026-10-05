@@ -86,7 +86,8 @@ impl MFEncoder {
             mt_out.SetUINT64(&MF_MT_FRAME_SIZE, pack_ratio(width, height))?;
             mt_out.SetUINT64(&MF_MT_FRAME_RATE, pack_ratio(60, 1))?;
             mt_out.SetUINT32(&MF_MT_INTERLACE_MODE, 2)?;
-            mt_out.SetUINT32(&MF_MT_AVG_BITRATE, 5_000_000)?;
+            let default_bitrate = crate::capture::TARGET_BITRATE.load(std::sync::atomic::Ordering::Relaxed).max(10_000_000);
+            mt_out.SetUINT32(&MF_MT_AVG_BITRATE, default_bitrate)?;
             transform.SetOutputType(0, &mt_out, 0)?;
 
             // 3. Setup Codec API for Ultra-Low-Latency Real-Time Streaming
@@ -106,16 +107,20 @@ impl MFEncoder {
                 let var_rate_control = windows::core::VARIANT::from(0u32);
                 let _ = codec_api.SetValue(&CODECAPI_AVEncCommonRateControlMode, &var_rate_control);
 
-                let var_bitrate = windows::core::VARIANT::from(5_000_000u32);
+                let var_bitrate = windows::core::VARIANT::from(default_bitrate);
                 let _ = codec_api.SetValue(&CODECAPI_AVEncCommonMeanBitRate, &var_bitrate);
                 let _ = codec_api.SetValue(&CODECAPI_AVEncCommonMaxBitRate, &var_bitrate);
 
                 // CRITICAL: Cap the VBV buffer so no single frame (incl. keyframes) exceeds
                 // ~2 frames worth of bits. Without this, IDRs hit 150 KB = 150 UDP packets,
                 // one lost packet kills the frame, client asks for another IDR -> stuck loop.
-                let var_buf = windows::core::VARIANT::from(vbv_bits(5_000_000));
+                let var_buf = windows::core::VARIANT::from(vbv_bits(default_bitrate));
                 let hr = codec_api.SetValue(&CODECAPI_AVEncCommonBufferSize, &var_buf);
-                info!("VBV buffer cap set: {} bits ({:?})", vbv_bits(5_000_000), hr);
+                info!("VBV buffer cap set: {} bits ({:?}) for {} bps", vbv_bits(default_bitrate), hr, default_bitrate);
+
+                // High quality visual tuning (75/100)
+                let var_quality = windows::core::VARIANT::from(75u32);
+                let _ = codec_api.SetValue(&CODECAPI_AVEncCommonQualityVsSpeed, &var_quality);
             }
 
             // 4. Configure Input Type (ARGB32 matches DXGI desktop format natively on RTX 2060)

@@ -51,26 +51,32 @@ pub fn handle_rtt_pong(rtt_ms: u32) {
     let srtt = (prev_srtt * 7 + rtt_ms * 3) / 10;
     SMOOTHED_RTT_MS.store(srtt, Ordering::Relaxed);
 
+    // ONLY adjust bitrate dynamically if user explicitly enabled AUTO mode!
+    // If the user selected 1080p HD, 1440p, or 720p, preserve their chosen quality completely.
+    if !crate::capture::AUTO_BITRATE_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+
     let base_bitrate = crate::capture::CONFIGURED_BITRATE.load(Ordering::Relaxed);
     let current_bitrate = crate::capture::TARGET_BITRATE.load(Ordering::Relaxed);
 
-    // Bufferbloat detection: RTT elevated by >25ms over physical baseline indicates queue buildup
-    let is_congested = rtt_ms > min_rtt + 25 || srtt > min_rtt + 20;
+    // True WAN Bufferbloat detection: RTT elevated by > 80ms over physical baseline indicates persistent queue buildup
+    let is_congested = rtt_ms > min_rtt + 80 && srtt > min_rtt + 60;
 
     if is_congested {
         CONSECUTIVE_CLEAN.store(0, Ordering::Relaxed);
-        let backed_off = (current_bitrate * 8 / 10).max(1_500_000);
+        let backed_off = (current_bitrate * 85 / 100).max(5_000_000);
         if backed_off < current_bitrate {
             crate::capture::TARGET_BITRATE.store(backed_off, Ordering::Relaxed);
             info!("WAN Bufferbloat detected (RTT: {}ms, min: {}ms). Throttling bitrate: {} -> {} bps", 
                 rtt_ms, min_rtt, current_bitrate, backed_off);
         }
-    } else {
+    } else if rtt_ms <= min_rtt + 40 {
         let clean = CONSECUTIVE_CLEAN.fetch_add(1, Ordering::Relaxed) + 1;
         // After 4 consecutive clean pings (~2 seconds of uncongested pipe), probe back towards configured bitrate
         if clean >= 4 && current_bitrate < base_bitrate {
             CONSECUTIVE_CLEAN.store(0, Ordering::Relaxed);
-            let ramped = (current_bitrate + 500_000).min(base_bitrate);
+            let ramped = (current_bitrate + 1_000_000).min(base_bitrate);
             crate::capture::TARGET_BITRATE.store(ramped, Ordering::Relaxed);
             info!("Path stable (RTT: {}ms). Ramping bitrate: {} -> {} bps", 
                 rtt_ms, current_bitrate, ramped);
