@@ -1,8 +1,8 @@
 use anyhow::Result;
-use tokio::net::TcpListener;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::sync::mpsc;
-use tracing::{info, error, warn};
+use tracing::{error, info, warn};
 
 pub async fn start_tcp_server() -> Result<()> {
     let listener = TcpListener::bind("0.0.0.0:21118").await?;
@@ -16,7 +16,7 @@ pub async fn start_tcp_server() -> Result<()> {
                 continue;
             }
         };
-        
+
         info!("TCP Client connected: {}", addr);
         if let Err(e) = socket.set_nodelay(true) {
             warn!("Failed to set TCP_NODELAY: {}", e);
@@ -24,10 +24,10 @@ pub async fn start_tcp_server() -> Result<()> {
 
         tokio::spawn(async move {
             let (mut rx_socket, mut tx_socket) = socket.into_split();
-            
+
             let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1);
-            let capture_handle = tokio::spawn(async move {
-                if let Err(e) = crate::capture::start_capture_loop(tx).await {
+            let capture_handle = std::thread::spawn(move || {
+                if let Err(e) = crate::capture::start_capture_loop() {
                     error!("TCP Capture error: {}", e);
                 }
             });
@@ -36,8 +36,12 @@ pub async fn start_tcp_server() -> Result<()> {
             let writer_task = tokio::spawn(async move {
                 while let Some(nalu) = rx.recv().await {
                     let len = nalu.len() as u32;
-                    if tx_socket.write_all(&len.to_le_bytes()).await.is_err() { break; }
-                    if tx_socket.write_all(&nalu).await.is_err() { break; }
+                    if tx_socket.write_all(&len.to_le_bytes()).await.is_err() {
+                        break;
+                    }
+                    if tx_socket.write_all(&nalu).await.is_err() {
+                        break;
+                    }
                 }
             });
 
@@ -46,11 +50,14 @@ pub async fn start_tcp_server() -> Result<()> {
                 loop {
                     // All touch/mouse packets from Android are currently exactly 15 bytes!
                     let mut b = [0u8; 15];
-                    if rx_socket.read_exact(&mut b).await.is_err() { break; }
-                    
+                    if rx_socket.read_exact(&mut b).await.is_err() {
+                        break;
+                    }
+
                     // b[0..4] is "DLP1", b[4] is 0x07 (Input Type)
                     // The actual input payload starts at index 5.
-                    if b[0] == b'D' && b[1] == b'L' && b[2] == b'P' && b[3] == b'1' && b[4] == 0x07 {
+                    if b[0] == b'D' && b[1] == b'L' && b[2] == b'P' && b[3] == b'1' && b[4] == 0x07
+                    {
                         crate::input::handle_input_payload(&b[5..]);
                     }
                 }
@@ -63,7 +70,6 @@ pub async fn start_tcp_server() -> Result<()> {
             }
 
             info!("TCP Client disconnected: {}", addr);
-            capture_handle.abort();
         });
     }
 }

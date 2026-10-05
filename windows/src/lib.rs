@@ -1,20 +1,21 @@
-use tracing::{info, error};
 use std::sync::Mutex;
+use tracing::{error, info};
 
-mod capture;
-mod encoder;
+pub mod audio;
+pub mod capture;
+pub mod encoder;
+pub mod input;
 mod network;
+mod network_tcp;
+pub mod network_udp;
 mod signaling;
 mod transport;
-mod input;
-mod network_udp;
-mod network_tcp;
-mod audio;
 
 static RUNTIME: Mutex<Option<tokio::runtime::Runtime>> = Mutex::new(None);
 
 #[no_mangle]
 pub extern "C" fn start_directlink_backend() {
+    init_logger();
     let mut rt_lock = RUNTIME.lock().unwrap();
     if rt_lock.is_some() {
         info!("Backend already running.");
@@ -24,7 +25,7 @@ pub extern "C" fn start_directlink_backend() {
     unsafe {
         let _ = windows::Win32::System::Threading::SetPriorityClass(
             windows::Win32::System::Threading::GetCurrentProcess(),
-            windows::Win32::System::Threading::REALTIME_PRIORITY_CLASS
+            windows::Win32::System::Threading::REALTIME_PRIORITY_CLASS,
         );
         windows::Win32::Media::timeBeginPeriod(1);
     }
@@ -39,13 +40,13 @@ pub extern "C" fn start_directlink_backend() {
         use socket2::Socket;
         let std_socket = std::net::UdpSocket::bind("0.0.0.0:21118").unwrap();
         std_socket.set_nonblocking(true).unwrap();
-        
+
         let socket2_sock: Socket = std_socket.into();
-        let _ = socket2_sock.set_send_buffer_size(2 * 1024 * 1024);
-        
+        let _ = socket2_sock.set_send_buffer_size(4 * 1024 * 1024);
+        let _ = socket2_sock.set_recv_buffer_size(4 * 1024 * 1024);
+
         let std_socket: std::net::UdpSocket = socket2_sock.into();
-        let socket = std::sync::Arc::new(tokio::net::UdpSocket::from_std(std_socket).unwrap());
-        if let Err(e) = network_udp::start_direct_server(socket).await {
+        if let Err(e) = network_udp::start_direct_server(std_socket).await {
             error!("Server crashed: {:?}", e);
         }
     });
@@ -78,3 +79,13 @@ pub extern "C" fn get_current_fps() -> u32 {
 pub extern "C" fn get_current_bitrate() -> u32 {
     capture::TARGET_BITRATE.load(std::sync::atomic::Ordering::Relaxed)
 }
+
+#[no_mangle]
+pub extern "C" fn init_logger() {
+    let file = std::fs::File::create("C:\\Users\\user\\Desktop\\Handesk-Windows-Newest\\directlink.log").unwrap();
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_writer(std::sync::Arc::new(file))
+        .try_init();
+}
+

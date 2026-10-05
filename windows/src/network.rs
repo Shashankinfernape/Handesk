@@ -1,19 +1,22 @@
 use anyhow::Result;
 use tokio::sync::mpsc;
-use tracing::{info, error};
+use tracing::{error, info};
 
 use crate::capture;
 use crate::transport::Transport;
 
 pub async fn start_session(transport: Transport) -> Result<()> {
-    info!("Starting Remote Desktop session over {:?}", transport.transport_type);
+    info!(
+        "Starting Remote Desktop session over {:?}",
+        transport.transport_type
+    );
 
     // Bounded channel: if capture is faster than network, drop stale frames (newest wins)
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(4);
 
     // Start DXGI Capture + Encoder loop on dedicated thread
-    tokio::spawn(async move {
-        if let Err(e) = capture::start_capture_loop(tx).await {
+    std::thread::spawn(move || {
+        if let Err(e) = capture::start_capture_loop() {
             error!("Capture loop error: {}", e);
         }
     });
@@ -36,7 +39,9 @@ pub async fn start_session(transport: Transport) -> Result<()> {
             let chunk_idx = i as u16;
             // Header: [2-byte chunk_idx][2-byte total_chunks][4-byte frame_id]
             let mut packet = Vec::with_capacity(prefix_len + 8 + chunk.len());
-            if prefix_len > 0 { packet.extend_from_slice(prefix); }
+            if prefix_len > 0 {
+                packet.extend_from_slice(prefix);
+            }
             packet.extend_from_slice(&chunk_idx.to_le_bytes());
             packet.extend_from_slice(&total_chunks.to_le_bytes());
             packet.extend_from_slice(&frame_id.to_le_bytes());
@@ -48,7 +53,13 @@ pub async fn start_session(transport: Transport) -> Result<()> {
             }
         }
 
-        info!("Sent frame {} ({} bytes) in {} chunks to {}", frame_id, nalu.len(), total_chunks, target);
+        info!(
+            "Sent frame {} ({} bytes) in {} chunks to {}",
+            frame_id,
+            nalu.len(),
+            total_chunks,
+            target
+        );
     }
 
     Ok(())

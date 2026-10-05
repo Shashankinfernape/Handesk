@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Autonomous Agent"]
 
 [dependencies]
-tokio = { version = "1.37", features = ["full"] }
+tokio = { version = "1.37", features = ["full", "macros", "rt-multi-thread"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 bytes = "1.5"
@@ -45,6 +45,12 @@ features = [
     "Graphics_Capture",
 ]
 
+
+
 [lib]
-name = "directlink_host"
 crate-type = ["cdylib", "rlib"]
+
+
+
+
+

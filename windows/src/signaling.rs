@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use ed25519_dalek::{SigningKey, Signer};
+use ed25519_dalek::{Signer, SigningKey};
 use futures_util::{SinkExt, StreamExt};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -7,9 +7,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::tungstenite::Message;
-use tracing::{info, debug, error};
+use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tracing::{debug, error, info};
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
@@ -27,15 +27,26 @@ pub enum SignalMessage {
     #[serde(rename = "CLIENT_REQUEST")]
     ClientRequest { sessionId: String, clientIp: String },
     #[serde(rename = "CANDIDATE")]
-    Candidate { sessionId: String, candidate: String, isHost: Option<bool>, serverReflexiveIp: Option<String> },
+    Candidate {
+        sessionId: String,
+        candidate: String,
+        isHost: Option<bool>,
+        serverReflexiveIp: Option<String>,
+    },
     #[serde(rename = "ALLOCATE_RELAY")]
     AllocateRelay { sessionId: String },
     #[serde(rename = "RELAY_ALLOCATED")]
-    RelayAllocated { relayIp: String, relayPort: u16, sessionId: String },
+    RelayAllocated {
+        relayIp: String,
+        relayPort: u16,
+        sessionId: String,
+    },
 }
 
 pub struct SignalingClient {
-    ws_tx: Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>,
+    ws_tx: Arc<
+        Mutex<futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>,
+    >,
     signing_key: SigningKey,
     pub remote_id: Option<String>,
     pub capture_task: Option<tokio::task::JoinHandle<()>>,
@@ -45,8 +56,15 @@ pub struct SignalingClient {
 }
 
 impl SignalingClient {
-    pub async fn connect(url: &str, public_ip: Option<String>, public_ip_v6: Option<String>, udp_socket: Arc<tokio::net::UdpSocket>) -> Result<Arc<Mutex<Self>>> {
-        let (ws_stream, _) = connect_async(url).await.context("Failed to connect to signaling server")?;
+    pub async fn connect(
+        url: &str,
+        public_ip: Option<String>,
+        public_ip_v6: Option<String>,
+        udp_socket: Arc<tokio::net::UdpSocket>,
+    ) -> Result<Arc<Mutex<Self>>> {
+        let (ws_stream, _) = connect_async(url)
+            .await
+            .context("Failed to connect to signaling server")?;
         let (mut write, mut read) = ws_stream.split();
 
         let mut csprng = OsRng;
@@ -69,13 +87,15 @@ impl SignalingClient {
         }));
 
         let client_clone = client.clone();
-        
+
         tokio::spawn(async move {
             while let Some(msg) = read.next().await {
                 match msg {
                     Ok(Message::Text(text)) => {
                         if let Ok(signal) = serde_json::from_str::<SignalMessage>(&text) {
-                            if let Err(e) = Self::handle_signal(signal, &client_clone, &pubkey_hex).await {
+                            if let Err(e) =
+                                Self::handle_signal(signal, &client_clone, &pubkey_hex).await
+                            {
                                 error!("Error handling signal: {}", e);
                             }
                         }
@@ -97,18 +117,22 @@ impl SignalingClient {
         Ok(client)
     }
 
-    async fn handle_signal(signal: SignalMessage, client: &Arc<Mutex<SignalingClient>>, pubkey_hex: &str) -> Result<()> {
+    async fn handle_signal(
+        signal: SignalMessage,
+        client: &Arc<Mutex<SignalingClient>>,
+        pubkey_hex: &str,
+    ) -> Result<()> {
         match signal {
             SignalMessage::Challenge { challenge } => {
                 let mut c = client.lock().await;
                 let signature = c.signing_key.sign(challenge.as_bytes());
                 let sig_hex = hex::encode(signature.to_bytes());
-                
+
                 let auth_msg = serde_json::to_string(&SignalMessage::HostAuth {
                     pubKey: pubkey_hex.to_string(),
                     signature: sig_hex,
                 })?;
-                
+
                 c.ws_tx.lock().await.send(Message::Text(auth_msg)).await?;
                 debug!("Sent auth signature");
             }
@@ -119,14 +143,20 @@ impl SignalingClient {
                 info!("  DirectLink Remote ID: {}", remoteId);
                 info!("========================================");
             }
-            SignalMessage::ClientRequest { sessionId, clientIp } => {
-                info!("Incoming connection request from {} - sending UDP candidate", clientIp);
+            SignalMessage::ClientRequest {
+                sessionId,
+                clientIp,
+            } => {
+                info!(
+                    "Incoming connection request from {} - sending UDP candidate",
+                    clientIp
+                );
                 let c = client.clone();
                 let session = sessionId.clone();
 
                 tokio::spawn(async move {
                     let lock = c.lock().await;
-                    
+
                     // Send Public IPv4 candidate
                     if let Some(ip) = &lock.public_ip {
                         let candidate_msg = serde_json::to_string(&SignalMessage::Candidate {
@@ -134,13 +164,14 @@ impl SignalingClient {
                             candidate: "udp:0.0.0.0".to_string(),
                             isHost: Some(true),
                             serverReflexiveIp: Some(ip.clone()),
-                        }).unwrap();
+                        })
+                        .unwrap();
                         let mut tx_lock = lock.ws_tx.lock().await;
                         let _ = tx_lock.send(Message::Text(candidate_msg)).await;
                         drop(tx_lock);
                         info!("Sent Public IPv4 UDP candidate: {}", ip);
                     }
-                    
+
                     // Send Public IPv6 candidate
                     if let Some(ip_v6) = &lock.public_ip_v6 {
                         let candidate_v6_msg = serde_json::to_string(&SignalMessage::Candidate {
@@ -148,7 +179,8 @@ impl SignalingClient {
                             candidate: "udp:0.0.0.0".to_string(),
                             isHost: Some(true),
                             serverReflexiveIp: Some(ip_v6.clone()),
-                        }).unwrap();
+                        })
+                        .unwrap();
                         let mut tx_lock = lock.ws_tx.lock().await;
                         let _ = tx_lock.send(Message::Text(candidate_v6_msg)).await;
                         drop(tx_lock);
@@ -163,17 +195,22 @@ impl SignalingClient {
                                 if let Some(ip_part) = line.split(": ").last() {
                                     let local_ip = ip_part.trim().to_string();
                                     let local_ip_with_port = format!("{}:21118", local_ip);
-                                    
-                                    let candidate_local = serde_json::to_string(&SignalMessage::Candidate {
-                                        sessionId: session.clone(),
-                                        candidate: "udp:0.0.0.0".to_string(),
-                                        isHost: Some(true),
-                                        serverReflexiveIp: Some(local_ip_with_port.clone()),
-                                    }).unwrap();
+
+                                    let candidate_local =
+                                        serde_json::to_string(&SignalMessage::Candidate {
+                                            sessionId: session.clone(),
+                                            candidate: "udp:0.0.0.0".to_string(),
+                                            isHost: Some(true),
+                                            serverReflexiveIp: Some(local_ip_with_port.clone()),
+                                        })
+                                        .unwrap();
                                     let mut tx_lock = lock.ws_tx.lock().await;
                                     let _ = tx_lock.send(Message::Text(candidate_local)).await;
                                     drop(tx_lock);
-                                    info!("Sent Local/Tailscale IPv4 UDP candidate: {}", local_ip_with_port);
+                                    info!(
+                                        "Sent Local/Tailscale IPv4 UDP candidate: {}",
+                                        local_ip_with_port
+                                    );
                                 }
                             }
                         }
@@ -184,8 +221,16 @@ impl SignalingClient {
                     }
                 });
             }
-            SignalMessage::Candidate { sessionId, candidate, serverReflexiveIp, .. } => {
-                info!("Received candidate from Android for {}: {}", sessionId, candidate);
+            SignalMessage::Candidate {
+                sessionId,
+                candidate,
+                serverReflexiveIp,
+                ..
+            } => {
+                info!(
+                    "Received candidate from Android for {}: {}",
+                    sessionId, candidate
+                );
                 let mut targets = Vec::new();
                 if let Some(ip) = serverReflexiveIp {
                     info!("Android public IP: {}", ip);
@@ -217,8 +262,15 @@ impl SignalingClient {
             SignalMessage::Error { message } => {
                 error!("Signaling Error: {}", message);
             }
-            SignalMessage::RelayAllocated { relayIp, relayPort, sessionId } => {
-                info!("Relay allocated at {}:{} for session {}", relayIp, relayPort, sessionId);
+            SignalMessage::RelayAllocated {
+                relayIp,
+                relayPort,
+                sessionId,
+            } => {
+                info!(
+                    "Relay allocated at {}:{} for session {}",
+                    relayIp, relayPort, sessionId
+                );
             }
             _ => {}
         }

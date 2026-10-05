@@ -1,13 +1,14 @@
-use tokio::net::UdpSocket;
 use anyhow::Result;
 use bytes::{BufMut, BytesMut};
-use std::sync::Arc;
 use std::net::SocketAddr;
+use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::atomic::{AtomicU32, Ordering};
+use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
-use tracing::{info, error};
+use tracing::{error, info};
 
 pub const MAGIC_BYTES: [u8; 4] = [b'D', b'L', b'P', b'1'];
-const MAX_UDP_PAYLOAD: usize = 1024; // 1024 perfectly fits inside Tailscale Wireguard's 1280 MTU
+const MAX_UDP_PAYLOAD: usize = 1024; // 1024 fits inside WireGuard / Ethernet MTUs perfectly
 
 // Packet Types
 const PACKET_HELLO: u8 = 0x01;
@@ -16,17 +17,135 @@ const PACKET_INPUT: u8 = 0x07;
 const PACKET_SETTINGS: u8 = 0x09;
 const PACKET_REQUEST_IDR: u8 = 0x0A;
 
-pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
+pub static VIDEO_SOCKET: OnceLock<std::net::UdpSocket> = OnceLock::new();
+pub static ACTIVE_CLIENT: RwLock<Option<SocketAddr>> = RwLock::new(None);
+static VIDEO_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
+/// Zero-latency direct UDP transmission from the hardware encoder thread
+pub fn broadcast_video_frame(nalu: &[u8]) {
+    let remote_addr = match *ACTIVE_CLIENT.read().unwrap() {
+        Some(addr) => addr,
+        None => return,
+    };
+    let socket = match VIDEO_SOCKET.get() {
+        Some(s) => s,
+        None => return,
+    };
+
+    let seq = VIDEO_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let total_chunks = ((nalu.len() + MAX_UDP_PAYLOAD - 1) / MAX_UDP_PAYLOAD) as u16;
+
+    let mut packet_buf = [0u8; 15 + MAX_UDP_PAYLOAD];
+    packet_buf[0..4].copy_from_slice(&MAGIC_BYTES);
+    packet_buf[4] = PACKET_VIDEO;
+    packet_buf[5..9].copy_from_slice(&seq.to_le_bytes());
+    packet_buf[11..13].copy_from_slice(&total_chunks.to_le_bytes());
+
+    for (chunk_index, chunk) in nalu.chunks(MAX_UDP_PAYLOAD).enumerate() {
+        let chunk_len = chunk.len() as u16;
+        packet_buf[9..11].copy_from_slice(&(chunk_index as u16).to_le_bytes());
+        packet_buf[13..15].copy_from_slice(&chunk_len.to_le_bytes());
+        packet_buf[15..15 + chunk.len()].copy_from_slice(chunk);
+
+        let total_packet_len = 15 + chunk.len();
+        let payload = &packet_buf[..total_packet_len];
+
+        // Micro-pacing for multi-packet bursts (prevents Wi-Fi AP queue overflow on keyframes)
+        if total_chunks > 4 && chunk_index > 0 {
+            let spin_start = std::time::Instant::now();
+            while spin_start.elapsed().as_micros() < 20 {
+                std::hint::spin_loop();
+            }
+        }
+
+        // Send with transient WouldBlock retry (handles OS socket buffer backpressure)
+        let mut retries = 0;
+        loop {
+            match socket.send_to(payload, remote_addr) {
+                Ok(_) => break,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if retries >= 10 {
+                        break;
+                    }
+                    retries += 1;
+                    std::thread::yield_now();
+                }
+                Err(e) => {
+                    error!("UDP video send_to error: {:?}", e);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+pub async fn start_direct_server(std_socket: std::net::UdpSocket) -> Result<()> {
     info!("========================================");
     info!(" DirectLink Server Listening on UDP 21118");
     info!(" Waiting for Android Client (Local IP)...");
     info!("========================================");
 
-    let mut buf = vec![0u8; 2048];
-    let mut current_capture_task: Option<tokio::task::JoinHandle<()>> = None;
-    let mut current_audio_task: Option<tokio::task::JoinHandle<()>> = None;
-    let mut current_client: Option<SocketAddr> = None;
+    // Save cloned socket for the dedicated hardware capture thread
+    let video_sock = std_socket.try_clone()?;
+    let _ = VIDEO_SOCKET.set(video_sock);
 
+    let socket = Arc::new(UdpSocket::from_std(std_socket)?);
+
+    // 1. Initialize dedicated OS capture thread (High-priority hardware loop)
+    std::thread::Builder::new()
+        .name("directlink-capture".into())
+        .spawn(move || {
+            loop {
+                info!("Starting dedicated OS capture thread");
+                if let Err(e) = crate::capture::start_capture_loop() {
+                    error!("Capture loop exited: {:?}. Restarting in 500ms...", e);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                crate::capture::FORCE_IDR.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        })
+        .expect("Failed to spawn capture thread");
+
+    // 2. Initialize persistent audio capture loop (SINGLETON, auto-restarting)
+    let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<u8>>(50);
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = crate::audio::start_audio_loop(audio_tx.clone()).await {
+                error!("Audio loop crashed: {:?}. Restarting in 1s...", e);
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            }
+        }
+    });
+
+    // 3. Persistent AUDIO sender loop
+    let socket_audio = socket.clone();
+    tokio::spawn(async move {
+        let mut audio_sequence: u32 = 0;
+        while let Some(pcm) = audio_rx.recv().await {
+            let remote_addr = match *ACTIVE_CLIENT.read().unwrap() {
+                Some(addr) => addr,
+                None => continue,
+            };
+            audio_sequence = audio_sequence.wrapping_add(1);
+            let audio_mtu = 1200;
+            let total_chunks = ((pcm.len() + audio_mtu - 1) / audio_mtu) as u16;
+
+            for (chunk_index, chunk) in pcm.chunks(audio_mtu).enumerate() {
+                let mut frame = BytesMut::with_capacity(15 + chunk.len());
+                frame.extend_from_slice(&MAGIC_BYTES);
+                frame.put_u8(0x08); // PACKET_AUDIO
+                frame.put_u32_le(audio_sequence);
+                frame.put_u16_le(chunk_index as u16);
+                frame.put_u16_le(total_chunks);
+                frame.put_u16_le(chunk.len() as u16);
+                frame.extend_from_slice(chunk);
+                let _ = socket_audio.send_to(&frame, remote_addr).await;
+            }
+        }
+    });
+
+    // 4. UDP Receive Loop (Command & Control)
+    let mut buf = vec![0u8; 2048];
     loop {
         let (len, remote_addr) = match socket.recv_from(&mut buf).await {
             Ok(res) => res,
@@ -36,148 +155,17 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
             }
         };
 
-        if len < 5 { continue; }
-        if &buf[0..4] != &MAGIC_BYTES { continue; }
+        if len < 5 || &buf[0..4] != &MAGIC_BYTES {
+            continue;
+        }
 
         let packet_type = buf[4];
-
         match packet_type {
             PACKET_HELLO => {
-                // Instantly echo HELLO back so Android doesn't time out while NVENC initializes!
                 let _ = socket.send_to(&buf[0..len], remote_addr).await;
-
-                // Ignore duplicate HELLOs from the exact same tablet session to prevent crashing DXGI
-                if current_client == Some(remote_addr) {
-                    continue;
-                }
-
-                // Auto-detect Tailscale connection (100.x.x.x IP range)
-                let is_tailscale = matches!(remote_addr.ip(), std::net::IpAddr::V4(ip) if ip.octets()[0] == 100);
-                let pace_us: u128 = if is_tailscale { 2500 } else { 300 };
-
-                info!("========================================");
-                info!(" CLIENT CONNECTED: {:?}", remote_addr);
-                if is_tailscale {
-                    info!(" Mode: TAILSCALE (Internet) — 2500us pacing (3.2Mbps bandwidth)");
-                } else {
-                    info!(" Mode: LOCAL Wi-Fi — 300us fast pacing");
-                }
-                info!(" Initiating Direct P2P Video Stream!");
-                info!("========================================");
-                
-                current_client = Some(remote_addr);
-
-                // Abort old capture task if a DIFFERENT client connects
-                if let Some(task) = current_capture_task.take() {
-                    task.abort();
-                    // Give DXGI a split second to release COM resources
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                }
-
-                // Create channel for capture loop to send us NALUs
-                let (video_tx, mut video_rx) = mpsc::channel::<Vec<u8>>(1);
-
-                // Spawn the capture loop
-                let capture_handle = tokio::spawn(async move {
-                    if let Err(e) = crate::capture::start_capture_loop(video_tx).await {
-                        error!("Capture loop failed: {:?}", e);
-                    }
-                });
-                current_capture_task = Some(capture_handle);
-
-                if let Some(task) = current_audio_task.take() {
-                    task.abort();
-                }
-                
-                let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<u8>>(50);
-                let audio_handle = tokio::spawn(async move {
-                    if let Err(e) = crate::audio::start_audio_loop(audio_tx).await {
-                        error!("Audio loop failed: {:?}", e);
-                    }
-                });
-                current_audio_task = Some(audio_handle);
-
-                
-                
-                // Spawn the AUDIO sender loop
-                let socket_audio = socket.clone();
-                tokio::spawn(async move {
-                    let mut audio_sequence: u32 = 0;
-                    while let Some(pcm) = audio_rx.recv().await {
-                        audio_sequence = audio_sequence.wrapping_add(1);
-                        
-                        let audio_mtu = 1200;
-                        let total_chunks = ((pcm.len() + audio_mtu - 1) / audio_mtu) as u16;
-                        
-                        for (chunk_index, chunk) in pcm.chunks(audio_mtu).enumerate() {
-                            let mut frame = BytesMut::with_capacity(15 + chunk.len());
-                            frame.extend_from_slice(&MAGIC_BYTES);
-                            frame.put_u8(0x08); // PACKET_AUDIO
-                            frame.put_u32_le(audio_sequence);
-                            frame.put_u16_le(chunk_index as u16);
-                            frame.put_u16_le(total_chunks);
-                            frame.put_u16_le(chunk.len() as u16);
-                            frame.extend_from_slice(chunk);
-                            
-                            let _ = socket_audio.send_to(&frame, remote_addr).await;
-                        }
-                    }
-                });
-                
-
-                // Spawn the VIDEO sender loop for THIS specific client
-                let socket_clone = socket.clone();
-                tokio::spawn(async move {
-                    let mut sequence: u32 = 0;
-                    let mut frame_count = 0;
-                    while let Some(nalu) = video_rx.recv().await {
-                        frame_count += 1;
-                        if frame_count % 30 == 0 {
-                            let fps = crate::capture::TARGET_FPS.load(std::sync::atomic::Ordering::Relaxed);
-                            let bitrate = crate::capture::TARGET_BITRATE.load(std::sync::atomic::Ordering::Relaxed);
-                            let mut status_buf = vec![b'D', b'L', b'P', b'1', 0x09];
-                            status_buf.extend_from_slice(&fps.to_le_bytes());
-                            status_buf.extend_from_slice(&bitrate.to_le_bytes());
-                            let _ = socket_clone.send_to(&status_buf, remote_addr).await;
-                        }
-
-                        sequence = sequence.wrapping_add(1);
-                        let total_chunks = ((nalu.len() + MAX_UDP_PAYLOAD - 1) / MAX_UDP_PAYLOAD) as u16;
-                        
-                        for (chunk_index, chunk) in nalu.chunks(MAX_UDP_PAYLOAD).enumerate() {
-                            let mut frame = BytesMut::with_capacity(15 + chunk.len());
-                            frame.extend_from_slice(&MAGIC_BYTES);
-                            frame.put_u8(PACKET_VIDEO);
-                            frame.put_u32_le(sequence);
-                            frame.put_u16_le(chunk_index as u16);
-                            frame.put_u16_le(total_chunks);
-                            frame.put_u16_le(chunk.len() as u16);
-                            frame.extend_from_slice(chunk);
-                            
-                            if let Err(e) = socket_clone.send_to(&frame, remote_addr).await {
-                                error!("Failed to send UDP chunk: {}", e);
-                            }
-                            
-                            if pace_us == 300 {
-                                // LAN Mode: batch 16 chunks
-                                if chunk_index % 16 == 15 || chunk_index == (total_chunks - 1) as usize {
-                                    let spin_start = std::time::Instant::now();
-                                    while spin_start.elapsed().as_micros() < 50 {
-                                        std::hint::spin_loop();
-                                    }
-                                    tokio::task::yield_now().await;
-                                }
-                            } else {
-                                // Tailscale Mode
-                                let spin_start = std::time::Instant::now();
-                                while spin_start.elapsed().as_micros() < pace_us {
-                                    std::hint::spin_loop();
-                                }
-                                tokio::task::yield_now().await;
-                            }
-                        }
-                    }
-                });
+                *ACTIVE_CLIENT.write().unwrap() = Some(remote_addr);
+                crate::capture::FORCE_IDR.store(true, std::sync::atomic::Ordering::Relaxed);
+                info!("CLIENT CONNECTED: {:?}. Active stream routed instantly!", remote_addr);
             }
             PACKET_INPUT => {
                 crate::input::handle_input_payload(&buf[5..len]);
@@ -199,64 +187,42 @@ pub async fn start_direct_server(socket: Arc<UdpSocket>) -> Result<()> {
         }
     }
 }
+
 pub async fn start_relay_client(relay_ip: &str, relay_port: u16, session_id: &str) -> Result<()> {
-    let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+    let std_socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
+    std_socket.set_nonblocking(true)?;
+    let socket2_sock: socket2::Socket = std_socket.into();
+    let _ = socket2_sock.set_send_buffer_size(4 * 1024 * 1024);
+    let _ = socket2_sock.set_recv_buffer_size(4 * 1024 * 1024);
+    let std_socket: std::net::UdpSocket = socket2_sock.into();
+    let _ = VIDEO_SOCKET.set(std_socket.try_clone()?);
+    let socket = Arc::new(UdpSocket::from_std(std_socket)?);
     let remote_addr: SocketAddr = format!("{}:{}", relay_ip, relay_port).parse()?;
-    
+
     // Bind to Relay
     let bind_msg = format!("BIND:{}:HOST", session_id);
     socket.send_to(bind_msg.as_bytes(), remote_addr).await?;
-    
+
     info!("========================================");
     info!(" DIRECTLINK RELAY AUTHENTICATED");
     info!(" Streaming Video via UDP Relay!");
     info!("========================================");
 
-    // Spawn capture loop
-    let (video_tx, mut video_rx) = mpsc::channel::<Vec<u8>>(4);
-    tokio::spawn(async move {
-        if let Err(e) = crate::capture::start_capture_loop(video_tx).await {
-            error!("Capture loop failed: {:?}", e);
-        }
-    });
-
-    let socket_clone = socket.clone();
-    tokio::spawn(async move {
-        let mut sequence: u32 = 0;
-        while let Some(nalu) = video_rx.recv().await {
-            sequence = sequence.wrapping_add(1);
-            let total_chunks = ((nalu.len() + MAX_UDP_PAYLOAD - 1) / MAX_UDP_PAYLOAD) as u16;
-            
-            for (chunk_index, chunk) in nalu.chunks(MAX_UDP_PAYLOAD).enumerate() {
-                let mut frame = BytesMut::with_capacity(15 + chunk.len());
-                frame.extend_from_slice(&MAGIC_BYTES);
-                frame.put_u8(PACKET_VIDEO);
-                frame.put_u32_le(sequence);
-                frame.put_u16_le(chunk_index as u16);
-                frame.put_u16_le(total_chunks);
-                frame.put_u16_le(chunk.len() as u16);
-                frame.extend_from_slice(chunk);
-let _ = socket_clone.send_to(&frame, remote_addr).await;
-                                // Micro-pacing: Prevent Tailscale/UDP buffer drop for massive IDR frames
-                                // We spin-wait for 150us to spread the burst out, ensuring 100% delivery.
-                                let spin_start = std::time::Instant::now();
-                                while spin_start.elapsed().as_micros() < 300 {
-                                    std::hint::spin_loop();
-                                }
-                                tokio::task::yield_now().await;
-
-            }
-        }
-    });
+    *ACTIVE_CLIENT.write().unwrap() = Some(remote_addr);
+    crate::capture::FORCE_IDR.store(true, std::sync::atomic::Ordering::Relaxed);
 
     let mut buf = vec![0u8; 2048];
     loop {
         let (len, src) = socket.recv_from(&mut buf).await?;
-        if src != remote_addr { continue; }
-        
+        if src != remote_addr {
+            continue;
+        }
+
         let payload = &buf[..len];
-        if payload == b"BIND_OK" { continue; }
-        
+        if payload == b"BIND_OK" {
+            continue;
+        }
+
         if len >= 5 && &payload[0..4] == &MAGIC_BYTES {
             if payload[4] == PACKET_INPUT {
                 crate::input::handle_input_payload(&payload[5..len]);
@@ -264,9 +230,4 @@ let _ = socket_clone.send_to(&frame, remote_addr).await;
         }
     }
 }
-
-
-
-
-
 

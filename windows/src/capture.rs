@@ -1,124 +1,128 @@
 use anyhow::{Result, Context, anyhow};
 use std::time::Duration;
-use tokio::sync::mpsc;
-use tracing::{info, debug, error};
+use tracing::{info, error};
 
 use windows::core::Interface;
-use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0};
+use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, ID3D11Multithread,
     D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
-    D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE,
-    D3D11_RESOURCE_MISC_FLAG, D3D11_BIND_FLAG
+    D3D11_USAGE_DEFAULT, D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE,
 };
 use windows::Win32::Graphics::Dxgi::{
-    IDXGIDevice, IDXGIAdapter, IDXGIOutput, IDXGIOutput1, IDXGIOutputDuplication,
+    IDXGIDevice, IDXGIOutput1, IDXGIOutputDuplication,
     DXGI_OUTDUPL_FRAME_INFO, DXGI_ERROR_WAIT_TIMEOUT,
     IDXGIResource
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
-pub static TARGET_BITRATE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(15_000_000);
+pub static TARGET_BITRATE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(5_000_000);
 pub static TARGET_FPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(90);
 pub static FORCE_IDR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
+#[link(name = "user32")]
+extern "system" {
+    fn OpenDesktopW(lpszDesktop: windows::core::PCWSTR, dwFlags: u32, fInherit: i32, dwDesiredAccess: u32) -> isize;
+    fn SetThreadDesktop(hDesktop: isize) -> i32;
+}
+
+pub fn start_capture_loop() -> Result<()> {
     info!("Starting DXGI Desktop Duplication capture loop");
 
-    // Get DXGI Factory to enumerate adapters correctly for laptops
-    let factory: windows::Win32::Graphics::Dxgi::IDXGIFactory1 = unsafe { windows::Win32::Graphics::Dxgi::CreateDXGIFactory1().context("Failed to create DXGI factory")? };
-    
+    // CRITICAL: Attach this worker thread to the active user's 'Default' desktop.
+    // Without this, DuplicateOutput returns E_ACCESSDENIED (0x80070005) when called
+    // from background threads, services, or sub-processes!
+    unsafe {
+        let desk = OpenDesktopW(windows::core::w!("Default"), 0, 0, 0x01FF);
+        if desk != 0 {
+            let res = SetThreadDesktop(desk);
+            info!("Attached capture thread to 'Default' desktop (status: {})", res);
+        } else {
+            info!("OpenDesktopW returned 0, continuing with process desktop");
+        }
+    }
+
+    // Get DXGI Factory to enumerate adapters correctly
+    let factory: windows::Win32::Graphics::Dxgi::IDXGIFactory1 = unsafe {
+        windows::Win32::Graphics::Dxgi::CreateDXGIFactory1().context("Failed to create DXGI factory")?
+    };
+
     let mut best_device: Option<ID3D11Device> = None;
     let mut best_context: Option<ID3D11DeviceContext> = None;
-    let mut best_output: Option<windows::Win32::Graphics::Dxgi::IDXGIOutput1> = None;
-    let mut best_duplication: Option<windows::Win32::Graphics::Dxgi::IDXGIOutputDuplication> = None;
-    
-    // Bruteforce search: DXGI Desktop Duplication on Laptops (Optimus) returns E_ACCESSDENIED 
-    // if you try to capture the desktop using the dGPU instead of the iGPU.
-    // We must try EVERY GPU and EVERY monitor until one successfully returns DuplicateOutput.
-    'outer: for i in 0..10 {
+    let mut best_output: Option<IDXGIOutput1> = None;
+    let mut best_duplication: Option<IDXGIOutputDuplication> = None;
+
+    'outer: for i in 0..4 {
         if let Ok(adapter) = unsafe { factory.EnumAdapters(i) } {
-            for j in 0..5 {
+            let mut dev: Option<ID3D11Device> = None;
+            let mut ctx: Option<ID3D11DeviceContext> = None;
+            let hr = unsafe {
+                D3D11CreateDevice(
+                    &adapter,
+                    windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN,
+                    None,
+                    D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                    Some(&[D3D_FEATURE_LEVEL_11_0]),
+                    D3D11_SDK_VERSION,
+                    Some(&mut dev),
+                    None,
+                    Some(&mut ctx),
+                )
+            };
+            if hr.is_err() { continue; }
+            let d3d_device = dev.unwrap();
+            let d3d_context = ctx.unwrap();
+
+            if let Ok(multithread) = d3d_device.cast::<ID3D11Multithread>() {
+                unsafe { let _ = multithread.SetMultithreadProtected(true); }
+                info!("Enabled ID3D11Multithread protection on D3D11 device");
+            }
+
+            let dxgi_device: IDXGIDevice = match d3d_device.cast() {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+
+            for j in 0..4 {
                 if let Ok(output) = unsafe { adapter.EnumOutputs(j) } {
-                    if let Ok(output1) = output.cast::<windows::Win32::Graphics::Dxgi::IDXGIOutput1>() {
-                        
-                        let mut dev: Option<ID3D11Device> = None;
-                        let mut ctx: Option<ID3D11DeviceContext> = None;
-                        
-                        let hr = unsafe {
-                            D3D11CreateDevice(
-                                &adapter,
-                                windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN,
-                                None,
-                                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                                Some(&[D3D_FEATURE_LEVEL_11_0]),
-                                D3D11_SDK_VERSION,
-                                Some(&mut dev),
-                                None,
-                                Some(&mut ctx),
-                            )
-                        };
-                        
-                        if hr.is_ok() {
-                            let d3d_device = dev.unwrap();
-                            let d3d_context = ctx.unwrap();
-                            if let Ok(dxgi_device) = d3d_device.cast::<IDXGIDevice>() {
-                                // THE ULTIMATE TEST: Does it let us duplicate?
-                                if let Ok(duplication) = unsafe { output1.DuplicateOutput(&dxgi_device) } {
-                                    info!("SUCCESS! Found correct GPU (Adapter {}) and Monitor ({}) for Desktop Duplication!", i, j);
+                    if let Ok(output1) = output.cast::<IDXGIOutput1>() {
+                        for attempt in 1..=5 {
+                            // Ensure thread is attached to interactive desktop before each attempt
+                            unsafe {
+                                let desk = OpenDesktopW(windows::core::w!("Default"), 0, 0, 0x01FF);
+                                if desk != 0 {
+                                    let _ = SetThreadDesktop(desk);
+                                }
+                            }
+                            let res = unsafe { output1.DuplicateOutput(&dxgi_device) };
+                            match res {
+                                Ok(duplication) => {
+                                    info!("SUCCESS! Found GPU Adapter {} Monitor {} on attempt {}!", i, j, attempt);
                                     best_device = Some(d3d_device);
                                     best_context = Some(d3d_context);
                                     best_output = Some(output1);
                                     best_duplication = Some(duplication);
                                     break 'outer;
-                                } else {
-                                    info!("GPU {} Monitor {} exists, but DuplicateOutput returned Access Denied/Unsupported.", i, j);
+                                }
+                                Err(e) => {
+                                    info!("DuplicateOutput Adapter {} Monitor {} attempt {}: {:?}", i, j, attempt, e);
+                                    if attempt < 5 {
+                                        std::thread::sleep(std::time::Duration::from_millis(300));
+                                    }
                                 }
                             }
                         }
                     }
-                } else {
-                    break; // No more outputs on this adapter
                 }
             }
-        } else {
-            break; // No more adapters
         }
     }
-    
+
     if best_duplication.is_none() {
-        error!("Failed to duplicate output! Error: E_ACCESSDENIED. Falling back to test pattern generator.");
-        let width = 600;
-        let height = 900;
-        let mut encoder = crate::encoder::MFEncoder::new(width, height)?;
-        let mut bgra_buffer = vec![255u8; (width * height * 4) as usize];
-        
-        let mut frame_count: u32 = 0;
-        loop {
-            let color = (frame_count % 255) as u8;
-            for i in (0..bgra_buffer.len()).step_by(4) {
-                bgra_buffer[i] = color;      // B
-                bgra_buffer[i+1] = color;    // G
-                bgra_buffer[i+2] = color;    // R
-                bgra_buffer[i+3] = 255;      // A
-            }
-            
-            match encoder.encode_frame(&bgra_buffer) {
-                Ok(nalu) => {
-                    if !nalu.is_empty() {
-                        if tx.send(nalu).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-                Err(e) => error!("Test pattern error: {}", e),
-            }
-            frame_count += 1;
-            tokio::time::sleep(std::time::Duration::from_millis(33)).await;
-        }
-        return Ok(());
+        error!("Failed to duplicate output after retries! Desktop may be locked or busy.");
+        return Err(anyhow!("Desktop duplication unavailable"));
     }
-    
+
     let duplication = best_duplication.unwrap();
     let d3d_device = best_device.unwrap();
     let d3d_context = best_context.unwrap();
@@ -128,40 +132,40 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
     let desc = unsafe { output1.GetDesc()? };
     let width = (desc.DesktopCoordinates.right - desc.DesktopCoordinates.left) as u32;
     let height = (desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top) as u32;
-    info!("DXGI Capture Target: {}x{}", width, height);
+    info!("DXGI Desktop Duplication initialized: {}x{}", width, height);
 
-    // Create Staging Texture (to read back to CPU for software encoding fallback)
-    let staging_desc = D3D11_TEXTURE2D_DESC {
+    // Create GPU Texture for Zero-Copy pipeline (direct surface binding to MFT)
+    let gpu_desc = D3D11_TEXTURE2D_DESC {
         Width: width,
         Height: height,
         MipLevels: 1,
         ArraySize: 1,
         Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-        SampleDesc: DXGI_SAMPLE_DESC {
-            Count: 1,
-            Quality: 0,
-        },
-        Usage: D3D11_USAGE_STAGING,
-        BindFlags: 0,
-        CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+        CPUAccessFlags: 0,
         MiscFlags: 0,
     };
 
-    let mut staging_texture_ptr: Option<ID3D11Texture2D> = None;
-    unsafe {
-        d3d_device.CreateTexture2D(&staging_desc, None, Some(&mut staging_texture_ptr))?;
+    let mut gpu_textures = Vec::new();
+    for _ in 0..3 {
+        let mut ptr: Option<ID3D11Texture2D> = None;
+        unsafe { d3d_device.CreateTexture2D(&gpu_desc, None, Some(&mut ptr))?; }
+        gpu_textures.push(ptr.unwrap());
     }
-    let staging_texture = staging_texture_ptr.unwrap();
+    let mut pool_idx = 0;
 
-    let mut encoder = crate::encoder::MFEncoder::new(width, height)?;
-    let mut bgra_buffer = vec![0u8; (width * height * 4) as usize];
+    let mut encoder = crate::encoder::MFEncoder::new(width, height, &d3d_device)?;
 
     let mut current_bitrate = TARGET_BITRATE.load(std::sync::atomic::Ordering::Relaxed);
-    
-    let mut frame_start = tokio::time::Instant::now();
+    encoder.set_bitrate(current_bitrate);
+
     let mut last_idr = std::time::Instant::now();
     let mut last_sent = std::time::Instant::now();
+
     loop {
+
         let new_bitrate = TARGET_BITRATE.load(std::sync::atomic::Ordering::Relaxed);
         if new_bitrate != current_bitrate {
             current_bitrate = new_bitrate;
@@ -169,31 +173,29 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
             encoder.set_bitrate(current_bitrate);
         }
 
-        // Rate-limit client IDR requests: at most one keyframe per 500ms.
-        // Without this, every lost packet triggers a huge keyframe, which causes more loss -> keyframe storm.
+        // Handle IDR request (Throttle to max 4 per second to prevent network storms, but never drop)
         if FORCE_IDR.swap(false, std::sync::atomic::Ordering::Relaxed) {
-            if last_idr.elapsed() >= Duration::from_millis(500) {
-                info!("Forcing IDR frame (Requested by client)");
+            if last_idr.elapsed() >= Duration::from_millis(250) {
+                info!("Triggering instantaneous IDR keyframe");
                 encoder.force_idr();
                 last_idr = std::time::Instant::now();
+            } else {
+                // Re-queue so it triggers on next frame after throttle period
+                FORCE_IDR.store(true, std::sync::atomic::Ordering::Relaxed);
             }
         }
 
-        // FPS throttle (user-selectable from Android / Windows UI)
+        // FPS pacing: User-configurable (default 90 FPS)
         let fps = TARGET_FPS.load(std::sync::atomic::Ordering::Relaxed).clamp(15, 144) as u32;
-        let frame_budget = Duration::from_micros(1_000_000 / fps as u64);
-
-        // Pace BEFORE grabbing, so a grabbed frame is encoded immediately (no sleeping on a stale frame).
-        let elapsed = frame_start.elapsed();
-        if elapsed < frame_budget {
-            tokio::time::sleep(frame_budget - elapsed).await;
-        }
+        let timeout_ms = (1000 / fps).max(1);
 
         let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut desktop_resource: Option<IDXGIResource> = None;
-        
-        // Wait up to one frame slot for a new desktop frame.
-        let timeout_ms = (1000 / fps).max(1);
+
+        let mut got_new_frame = false;
+
+        let mut current_texture: Option<&ID3D11Texture2D> = None;
+
         let res = unsafe {
             duplication.AcquireNextFrame(timeout_ms, &mut frame_info, &mut desktop_resource)
         };
@@ -201,62 +203,61 @@ pub async fn start_capture_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
         match res {
             Ok(_) => {
                 if let Some(resource) = desktop_resource {
-                    let frame_texture: ID3D11Texture2D = resource.cast()?;
-                    unsafe {
-                        d3d_context.CopyResource(&staging_texture, &frame_texture);
-                        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-                        d3d_context.Map(&staging_texture, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
-                        let pitch = mapped.RowPitch as usize;
-                        let src_slice = std::slice::from_raw_parts(mapped.pData as *const u8, pitch * height as usize);
-                        let row_width = (width * 4) as usize;
-                        for y in 0..height as usize {
-                            let src_start = y * pitch;
-                            let dst_start = y * row_width;
-                            bgra_buffer[dst_start..dst_start+row_width].copy_from_slice(&src_slice[src_start..src_start+row_width]);
+                    let frame_texture: ID3D11Texture2D = match resource.cast() {
+                        Ok(t) => t,
+                        Err(e) => {
+                            error!("Failed to cast resource to ID3D11Texture2D: {:?}", e);
+                            unsafe { let _ = duplication.ReleaseFrame(); }
+                            continue;
                         }
-                        d3d_context.Unmap(&staging_texture, 0);
+                    };
+                    let target_tex = &gpu_textures[pool_idx];
+                    unsafe {
+                        d3d_context.CopyResource(target_tex, &frame_texture);
                         let _ = duplication.ReleaseFrame();
                     }
+                    current_texture = Some(target_tex);
+                    pool_idx = (pool_idx + 1) % gpu_textures.len();
+                    got_new_frame = true;
                 } else {
                     unsafe { let _ = duplication.ReleaseFrame(); }
-                    continue; // No actual pixel data, skip encoding
                 }
             }
             Err(e) => {
                 if e.code() != DXGI_ERROR_WAIT_TIMEOUT {
-                    error!("DXGI AcquireNextFrame failed: {:?}", e);
+                    error!("DXGI AcquireNextFrame failed: {:?} - restarting capture", e);
                     break Err(anyhow!("DXGI Error: {:?}", e));
-                }
-                // Screen didn't change. Only re-send as a keepalive every 100ms.
-                // Re-encoding duplicates at every slot causes judder when target FPS > monitor refresh rate.
-                if last_sent.elapsed() < Duration::from_millis(100) {
-                    continue;
                 }
             }
         }
 
-        frame_start = tokio::time::Instant::now();
-        last_sent = std::time::Instant::now();
+        // Send keepalive if screen static
+        if !got_new_frame && last_sent.elapsed() >= Duration::from_millis(150) {
+            got_new_frame = true; // Feed the old texture again
+            let keepalive_idx = if pool_idx == 0 { gpu_textures.len() - 1 } else { pool_idx - 1 };
+            current_texture = Some(&gpu_textures[keepalive_idx]);
+        }
 
-        // Encode and send — CRITICAL: use try_send to NEVER block!
-        // If the channel is full (sender is busy), DROP the stale frame instantly.
-        // The next fresh frame will arrive in 16ms. This eliminates "stuck/delayed" latency buildup.
-        match encoder.encode_frame(&bgra_buffer) {
+        let texture_to_feed = if got_new_frame {
+            last_sent = std::time::Instant::now();
+            current_texture
+        } else {
+            None
+        };
+
+        // Encode on GPU (Zero-Copy)
+        match encoder.encode_frame_gpu(texture_to_feed) {
             Ok(nalu) => {
                 if !nalu.is_empty() {
-                    info!("Encoded frame size: {} bytes. Sending...", nalu.len());
-                    // MUST use blocking send — H.265 P-frames reference the previous frame.
-                    // Dropping ANY frame corrupts the entire stream until the next keyframe.
-                    // Channel size 1 in network_udp.rs limits backlog to max 1 frame (16ms).
-                    if tx.send(nalu).await.is_err() {
-                        info!("Capture loop shutting down (receiver dropped)");
-                        break Ok(());
+                    if nalu.len() > 40_000 {
+                        info!("Large frame: {} bytes", nalu.len());
                     }
-                } else {
-                    debug!("Encoder returned empty frame (needs more input).");
+                    crate::network_udp::broadcast_video_frame(&nalu);
                 }
             }
-            Err(e) => error!("Encoder error: {}", e),
+            Err(e) => {
+                error!("GPU Encoder error: {}", e);
+            }
         }
     }
 }
