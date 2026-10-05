@@ -12,10 +12,71 @@ const MAX_UDP_PAYLOAD: usize = 1024; // 1024 fits inside WireGuard / Ethernet MT
 
 // Packet Types
 const PACKET_HELLO: u8 = 0x01;
+const PACKET_PING: u8 = 0x02;
+const PACKET_PONG: u8 = 0x03;
 const PACKET_VIDEO: u8 = 0x06;
 const PACKET_INPUT: u8 = 0x07;
+const PACKET_AUDIO: u8 = 0x08;
 const PACKET_SETTINGS: u8 = 0x09;
 const PACKET_REQUEST_IDR: u8 = 0x0A;
+
+static MIN_RTT_MS: AtomicU32 = AtomicU32::new(9999);
+static SMOOTHED_RTT_MS: AtomicU32 = AtomicU32::new(10);
+static CONSECUTIVE_CLEAN: AtomicU32 = AtomicU32::new(0);
+static LAST_RTT_RESET: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+pub fn handle_rtt_pong(rtt_ms: u32) {
+    if rtt_ms == 0 || rtt_ms > 3000 {
+        return;
+    }
+
+    let mut last_reset = LAST_RTT_RESET.lock().unwrap();
+    let now = std::time::Instant::now();
+    let need_reset = match *last_reset {
+        Some(t) => now.duration_since(t).as_secs() >= 10,
+        None => true,
+    };
+    if need_reset {
+        *last_reset = Some(now);
+        MIN_RTT_MS.store(rtt_ms, Ordering::Relaxed);
+    } else {
+        let current_min = MIN_RTT_MS.load(Ordering::Relaxed);
+        if rtt_ms < current_min {
+            MIN_RTT_MS.store(rtt_ms, Ordering::Relaxed);
+        }
+    }
+
+    let min_rtt = MIN_RTT_MS.load(Ordering::Relaxed);
+    let prev_srtt = SMOOTHED_RTT_MS.load(Ordering::Relaxed);
+    let srtt = (prev_srtt * 7 + rtt_ms * 3) / 10;
+    SMOOTHED_RTT_MS.store(srtt, Ordering::Relaxed);
+
+    let base_bitrate = crate::capture::CONFIGURED_BITRATE.load(Ordering::Relaxed);
+    let current_bitrate = crate::capture::TARGET_BITRATE.load(Ordering::Relaxed);
+
+    // Bufferbloat detection: RTT elevated by >25ms over physical baseline indicates queue buildup
+    let is_congested = rtt_ms > min_rtt + 25 || srtt > min_rtt + 20;
+
+    if is_congested {
+        CONSECUTIVE_CLEAN.store(0, Ordering::Relaxed);
+        let backed_off = (current_bitrate * 8 / 10).max(1_500_000);
+        if backed_off < current_bitrate {
+            crate::capture::TARGET_BITRATE.store(backed_off, Ordering::Relaxed);
+            info!("WAN Bufferbloat detected (RTT: {}ms, min: {}ms). Throttling bitrate: {} -> {} bps", 
+                rtt_ms, min_rtt, current_bitrate, backed_off);
+        }
+    } else {
+        let clean = CONSECUTIVE_CLEAN.fetch_add(1, Ordering::Relaxed) + 1;
+        // After 4 consecutive clean pings (~2 seconds of uncongested pipe), probe back towards configured bitrate
+        if clean >= 4 && current_bitrate < base_bitrate {
+            CONSECUTIVE_CLEAN.store(0, Ordering::Relaxed);
+            let ramped = (current_bitrate + 500_000).min(base_bitrate);
+            crate::capture::TARGET_BITRATE.store(ramped, Ordering::Relaxed);
+            info!("Path stable (RTT: {}ms). Ramping bitrate: {} -> {} bps", 
+                rtt_ms, current_bitrate, ramped);
+        }
+    }
+}
 
 pub static VIDEO_SOCKET: OnceLock<std::net::UdpSocket> = OnceLock::new();
 pub static ACTIVE_CLIENT: RwLock<Option<SocketAddr>> = RwLock::new(None);
@@ -144,7 +205,32 @@ pub async fn start_direct_server(std_socket: std::net::UdpSocket) -> Result<()> 
         }
     });
 
-    // 4. UDP Receive Loop (Command & Control)
+    // 4. Background Ping sender (measures RTT every 500ms for adaptive bitrate)
+    let socket_ping = socket.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+        let mut ping_buf = [0u8; 13];
+        ping_buf[0..4].copy_from_slice(&MAGIC_BYTES);
+        ping_buf[4] = PACKET_PING;
+
+        loop {
+            interval.tick().await;
+            let remote_addr = match *ACTIVE_CLIENT.read().unwrap() {
+                Some(addr) => addr,
+                None => continue,
+            };
+
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+
+            ping_buf[5..13].copy_from_slice(&now_ms.to_le_bytes());
+            let _ = socket_ping.send_to(&ping_buf, remote_addr).await;
+        }
+    });
+
+    // 5. UDP Receive Loop (Command & Control)
     let mut buf = vec![0u8; 2048];
     loop {
         let (len, remote_addr) = match socket.recv_from(&mut buf).await {
@@ -167,6 +253,17 @@ pub async fn start_direct_server(std_socket: std::net::UdpSocket) -> Result<()> 
                 crate::capture::FORCE_IDR.store(true, std::sync::atomic::Ordering::Relaxed);
                 info!("CLIENT CONNECTED: {:?}. Active stream routed instantly!", remote_addr);
             }
+            PACKET_PONG => {
+                if len >= 13 {
+                    let sent_time = u64::from_le_bytes(buf[5..13].try_into().unwrap());
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let rtt_ms = (now_ms.saturating_sub(sent_time)) as u32;
+                    handle_rtt_pong(rtt_ms);
+                }
+            }
             PACKET_INPUT => {
                 crate::input::handle_input_payload(&buf[5..len]);
             }
@@ -179,6 +276,7 @@ pub async fn start_direct_server(std_socket: std::net::UdpSocket) -> Result<()> 
                     let fps = u32::from_le_bytes(buf[5..9].try_into().unwrap());
                     let bitrate = u32::from_le_bytes(buf[9..13].try_into().unwrap());
                     crate::capture::TARGET_FPS.store(fps, std::sync::atomic::Ordering::Relaxed);
+                    crate::capture::CONFIGURED_BITRATE.store(bitrate, std::sync::atomic::Ordering::Relaxed);
                     crate::capture::TARGET_BITRATE.store(bitrate, std::sync::atomic::Ordering::Relaxed);
                     info!("Client requested settings change: {} FPS, {} bps", fps, bitrate);
                 }

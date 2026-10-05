@@ -146,9 +146,13 @@ void network_loop(std::string ip) {
     udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_socket < 0) return;
 
-    // Set 1MB Receive Buffer (Big enough for burst, small enough to prevent latency)
-    int rcv_buf_size = 1024 * 1024;
+    // Set 4MB Receive Buffer (Accommodates multi-packet IDR bursts with zero kernel drops)
+    int rcv_buf_size = 4 * 1024 * 1024;
     setsockopt(udp_socket, SOL_SOCKET, SO_RCVBUF, &rcv_buf_size, sizeof(rcv_buf_size));
+
+    // Hardware QoS: Set DSCP 46 (0xB8) Expedited Forwarding -> 802.11e WMM Voice AC_VO Priority
+    int tos = 0xB8;
+    setsockopt(udp_socket, IPPROTO_IP, IP_TOS, &tos, sizeof(tos));
 
     memset(&target_addr_global, 0, sizeof(target_addr_global));
     target_addr_global.sin_family = AF_INET;
@@ -171,9 +175,18 @@ void network_loop(std::string ip) {
 
     while (is_running) {
         ssize_t len = recvfrom(udp_socket, buf, sizeof(buf), 0, nullptr, nullptr);
-        if (len < 15) continue;
+        if (len < 5) continue;
 
         if (buf[0] != 'D' || buf[1] != 'L' || buf[2] != 'P' || buf[3] != '1') continue;
+
+        if (buf[4] == 0x02) {
+            // Heartbeat / RTT measurement ping: echo pong immediately with original timestamp
+            buf[4] = 0x03; // PACKET_PONG
+            sendto(udp_socket, buf, len, 0, (struct sockaddr*)&target_addr_global, sizeof(target_addr_global));
+            continue;
+        }
+
+        if (len < 15) continue;
 
         if (buf[4] == 0x08) {
             uint16_t chunk_len = (uint16_t)buf[13] | ((uint16_t)buf[14] << 8);
@@ -213,6 +226,19 @@ void network_loop(std::string ip) {
         }
         
         frame_buffers[frame_id].chunks[chunk_idx] = payload;
+
+        // Evict expired incomplete frames (older than 100ms) over WAN to prevent jitter & freeze
+        if (frame_buffers.size() > 10) {
+            auto it = frame_buffers.begin();
+            while (it != frame_buffers.end()) {
+                if (now - it->second.timestamp_ms > 100) {
+                    it = frame_buffers.erase(it);
+                    send_idr_request();
+                } else {
+                    ++it;
+                }
+            }
+        }
         
         if (frame_buffers[frame_id].chunks.size() == total_chunks) {
             // Gap Detection

@@ -62,6 +62,8 @@ private val SuccessGreen = Color(0xFF34C759)
 
 class MainActivity : ComponentActivity() {
     private val networkClient = NativeClient()
+    private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
+    private var wakeLock: android.os.PowerManager.WakeLock? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -80,8 +82,46 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    fun acquireLowLatencyLocks() {
+        try {
+            if (wifiLock == null) {
+                val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+                wifiLock = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    wifiManager.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "DirectLink:LowLatency")
+                } else {
+                    @Suppress("DEPRECATION")
+                    wifiManager.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "DirectLink:HighPerf")
+                }
+                wifiLock?.setReferenceCounted(false)
+            }
+            if (wakeLock == null) {
+                val powerManager = applicationContext.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                wakeLock = powerManager.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "DirectLink:WakeLock")
+                wakeLock?.setReferenceCounted(false)
+            }
+            wifiLock?.acquire()
+            wakeLock?.acquire()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun releaseLowLatencyLocks() {
+        try {
+            if (wifiLock?.isHeld == true) {
+                wifiLock?.release()
+            }
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        releaseLowLatencyLocks()
         networkClient.disconnect()
     }
 }
@@ -105,6 +145,7 @@ fun DirectLinkTheme(content: @Composable () -> Unit) {
 fun DirectLinkApp(networkClient: NativeClient, activity: Activity) {
     var isConnected by remember { mutableStateOf(networkClient.isConnected) }
     var currentTab by remember { mutableIntStateOf(0) }
+    val coroutineScope = rememberCoroutineScope()
 
     if (!isConnected) {
         Scaffold(
@@ -157,9 +198,18 @@ fun DirectLinkApp(networkClient: NativeClient, activity: Activity) {
         ) { paddingValues ->
             Box(modifier = Modifier.padding(paddingValues).fillMaxSize().background(DarkBg)) {
                 when (currentTab) {
-                    0 -> HomeTab(networkClient, activity, onConnected = { isConnected = true })
+                    0 -> HomeTab(networkClient, activity, onConnected = { 
+                        (activity as? MainActivity)?.acquireLowLatencyLocks()
+                        isConnected = true 
+                    })
                     1 -> RecentTab(activity, onConnect = { ip -> 
-                        // Handled natively below in the flow, but just a placeholder for tab navigation
+                        coroutineScope.launch {
+                            val err = networkClient.connectToHost(ip)
+                            if (err == null) {
+                                (activity as? MainActivity)?.acquireLowLatencyLocks()
+                                isConnected = true
+                            }
+                        }
                     })
                     2 -> SettingsTab()
                 }
@@ -170,6 +220,7 @@ fun DirectLinkApp(networkClient: NativeClient, activity: Activity) {
             networkClient = networkClient,
             activity = activity,
             onDisconnect = { 
+                (activity as? MainActivity)?.releaseLowLatencyLocks()
                 networkClient.disconnect()
                 isConnected = false 
             }

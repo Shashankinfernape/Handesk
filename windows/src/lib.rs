@@ -44,6 +44,7 @@ pub extern "C" fn start_directlink_backend() {
         let socket2_sock: Socket = std_socket.into();
         let _ = socket2_sock.set_send_buffer_size(4 * 1024 * 1024);
         let _ = socket2_sock.set_recv_buffer_size(4 * 1024 * 1024);
+        let _ = socket2_sock.set_tos_v4(0xB8);
 
         let std_socket: std::net::UdpSocket = socket2_sock.into();
         if let Err(e) = network_udp::start_direct_server(std_socket).await {
@@ -67,6 +68,7 @@ pub extern "C" fn stop_directlink_backend() {
 #[no_mangle]
 pub extern "C" fn set_quality_settings(fps: u32, bitrate: u32) {
     capture::TARGET_FPS.store(fps, std::sync::atomic::Ordering::Relaxed);
+    capture::CONFIGURED_BITRATE.store(bitrate, std::sync::atomic::Ordering::Relaxed);
     capture::TARGET_BITRATE.store(bitrate, std::sync::atomic::Ordering::Relaxed);
 }
 
