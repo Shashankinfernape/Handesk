@@ -212,9 +212,11 @@ impl MFEncoder {
                         Ok(buffer) => {
                             if let Ok(sample_in) = MFCreateSample() {
                                 let _ = sample_in.AddBuffer(&buffer);
+                                let cur_fps = crate::capture::TARGET_FPS.load(std::sync::atomic::Ordering::Relaxed).clamp(15, 144) as u64;
+                                let duration = (10_000_000 / cur_fps) as i64;
                                 let _ = sample_in.SetSampleTime(self.sample_time);
-                                let _ = sample_in.SetSampleDuration(166666);
-                                self.sample_time += 166666;
+                                let _ = sample_in.SetSampleDuration(duration);
+                                self.sample_time += duration;
                                 match self.transform.ProcessInput(0, &sample_in, 0) {
                                     Ok(_) => self.can_input = false,
                                     Err(e) => error!("ProcessInput failed: {:?}", e),

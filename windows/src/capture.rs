@@ -473,7 +473,7 @@ pub fn start_capture_loop() -> Result<()> {
             encoder.set_gop_size(current_gop);
         }
 
-        let rtt = crate::network_kcp::SMOOTHED_RTT_MS.load(std::sync::atomic::Ordering::Relaxed);
+        let rtt = crate::network_udp::SMOOTHED_RTT_MS.load(std::sync::atomic::Ordering::Relaxed);
         let is_tailscale = IS_TAILSCALE_CLIENT.load(std::sync::atomic::Ordering::Relaxed);
 
         // IDR recovery throttle:
@@ -495,17 +495,18 @@ pub fn start_capture_loop() -> Result<()> {
             }
         }
 
-        // FPS pacing:
-        // LAN: unconstrained up to 144 FPS (match high refresh monitors)
-        // Tailscale (100.x.x.x): capped to 60 FPS max to eliminate WAN router queue backlog
+        // Precision FPS pacing (LAN supports 144 FPS, Tailscale 60 FPS)
         let max_fps = if is_tailscale { 60 } else { 144 };
         let fps = TARGET_FPS.load(std::sync::atomic::Ordering::Relaxed).clamp(15, max_fps) as u64;
         let frame_interval = Duration::from_micros(1_000_000 / fps);
         let elapsed = last_frame_time.elapsed();
         if elapsed < frame_interval {
             let remain = frame_interval - elapsed;
-            if remain > Duration::from_millis(1) {
-                std::thread::sleep(remain);
+            if remain > Duration::from_micros(2500) {
+                std::thread::sleep(remain - Duration::from_micros(1500));
+            }
+            while last_frame_time.elapsed() < frame_interval {
+                std::hint::spin_loop();
             }
         }
         last_frame_time = std::time::Instant::now();

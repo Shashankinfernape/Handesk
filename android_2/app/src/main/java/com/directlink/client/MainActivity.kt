@@ -480,24 +480,21 @@ fun RemoteSessionScreen(
     val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
 
     LaunchedEffect(networkClient) {
-        // Enforce 1080p HD (15 Mbps) default quality on stream start
-        networkClient.sendQualityChange(5)
-
         networkClient.onStatusUpdateListener = { newFps, newBitrate ->
-            if (currentFps != newFps) {
-                currentFps = newFps
-            }
-            if (isAutoMode) {
+            activity.runOnUiThread {
+                if (newFps in 15..144) {
+                    currentFps = newFps
+                }
                 val matchingQuality = when (newBitrate) {
                     500_000 -> "144p"
                     1_000_000 -> "240p"
                     2_000_000 -> "360p"
                     3_500_000 -> "480p"
                     5_000_000 -> "720p"
-                    7_000_000, 8_000_000 -> "1080p HD"
-                    14_000_000 -> "1440p HD"
-                    22_000_000 -> "Source (Lossless)"
-                    else -> ""
+                    7_000_000, 8_000_000, 12_000_000, 15_000_000 -> "1080p HD"
+                    14_000_000, 25_000_000 -> "1440p HD"
+                    22_000_000, 50_000_000 -> "Source (Lossless)"
+                    else -> if (newBitrate >= 30_000_000) "Source (Lossless)" else "1080p HD"
                 }
                 if (matchingQuality.isNotEmpty() && currentQuality != matchingQuality) {
                     currentQuality = matchingQuality

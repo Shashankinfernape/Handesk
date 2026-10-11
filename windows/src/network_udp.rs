@@ -100,6 +100,23 @@ pub fn broadcast_video_frame(nalu: &[u8]) {
     }
 }
 
+pub fn broadcast_settings(fps: u32, bitrate: u32) {
+    let remote_addr = match *ACTIVE_CLIENT.read().unwrap() {
+        Some(addr) => addr,
+        None => return,
+    };
+    let socket = match VIDEO_SOCKET.get() {
+        Some(s) => s,
+        None => return,
+    };
+    let mut pkt = [0u8; 13];
+    pkt[0..4].copy_from_slice(&MAGIC_BYTES);
+    pkt[4] = PACKET_SETTINGS;
+    pkt[5..9].copy_from_slice(&fps.to_le_bytes());
+    pkt[9..13].copy_from_slice(&bitrate.to_le_bytes());
+    let _ = socket.send_to(&pkt, remote_addr);
+}
+
 pub async fn start_udp_server() -> Result<()> {
     info!("========================================");
     info!(" Handesk Server Listening on UDP 21118");
@@ -276,6 +293,16 @@ pub async fn start_udp_server() -> Result<()> {
                 // Echo HELLO handshake back to client
                 let _ = socket.send_to(&buf[0..len], remote_addr).await;
 
+                // Send immediate Quality & FPS settings handshake so Android client UI syncs 1:1
+                let cur_fps = crate::capture::TARGET_FPS.load(Ordering::Relaxed);
+                let cur_bitrate = crate::capture::TARGET_BITRATE.load(Ordering::Relaxed);
+                let mut set_pkt = [0u8; 13];
+                set_pkt[0..4].copy_from_slice(&MAGIC_BYTES);
+                set_pkt[4] = PACKET_SETTINGS;
+                set_pkt[5..9].copy_from_slice(&cur_fps.to_le_bytes());
+                set_pkt[9..13].copy_from_slice(&cur_bitrate.to_le_bytes());
+                let _ = socket.send_to(&set_pkt, remote_addr).await;
+
                 // Send immediate Desktop Resolution handshake
                 let w = crate::capture::DESKTOP_WIDTH.load(Ordering::Relaxed);
                 let h = crate::capture::DESKTOP_HEIGHT.load(Ordering::Relaxed);
@@ -348,6 +375,11 @@ pub async fn start_udp_server() -> Result<()> {
             }
             PACKET_INPUT => {
                 crate::input::handle_input_payload(&buf[5..len]);
+                if len >= 7 && (buf[5] == 0x10 || buf[5] == 0x11) {
+                    let cur_fps = crate::capture::TARGET_FPS.load(Ordering::Relaxed);
+                    let cur_bitrate = crate::capture::TARGET_BITRATE.load(Ordering::Relaxed);
+                    broadcast_settings(cur_fps, cur_bitrate);
+                }
             }
             PACKET_REQUEST_IDR => {
                 crate::capture::FORCE_IDR.store(true, Ordering::Relaxed);
@@ -357,10 +389,17 @@ pub async fn start_udp_server() -> Result<()> {
                 if len >= 13 {
                     let fps = u32::from_le_bytes(buf[5..9].try_into().unwrap());
                     let bitrate = u32::from_le_bytes(buf[9..13].try_into().unwrap());
-                    crate::capture::TARGET_FPS.store(fps, Ordering::Relaxed);
-                    crate::capture::CONFIGURED_BITRATE.store(bitrate, Ordering::Relaxed);
-                    crate::capture::TARGET_BITRATE.store(bitrate, Ordering::Relaxed);
+                    if fps > 0 {
+                        crate::capture::TARGET_FPS.store(fps, Ordering::Relaxed);
+                    }
+                    if bitrate > 0 {
+                        crate::capture::CONFIGURED_BITRATE.store(bitrate, Ordering::Relaxed);
+                        crate::capture::TARGET_BITRATE.store(bitrate, Ordering::Relaxed);
+                    }
                     info!("Client requested settings change: {} FPS, {} bps", fps, bitrate);
+                    let cur_fps = crate::capture::TARGET_FPS.load(Ordering::Relaxed);
+                    let cur_bitrate = crate::capture::TARGET_BITRATE.load(Ordering::Relaxed);
+                    broadcast_settings(cur_fps, cur_bitrate);
                 }
             }
             _ => {}
