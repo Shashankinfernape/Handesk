@@ -1,92 +1,41 @@
 use anyhow::Result;
-use bytes::{BufMut, BytesMut};
 use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tracing::{error, info};
+use std::time::Instant;
 
 pub const MAGIC_BYTES: [u8; 4] = [b'D', b'L', b'P', b'1'];
-const MAX_UDP_PAYLOAD: usize = 1024; // 1024 fits inside WireGuard / Ethernet MTUs perfectly
 
-// Packet Types
-const PACKET_HELLO: u8 = 0x01;
-const PACKET_PING: u8 = 0x02;
-const PACKET_PONG: u8 = 0x03;
-const PACKET_VIDEO: u8 = 0x06;
-const PACKET_INPUT: u8 = 0x07;
-const PACKET_AUDIO: u8 = 0x08;
-const PACKET_SETTINGS: u8 = 0x09;
-const PACKET_REQUEST_IDR: u8 = 0x0A;
+// Packet Types (Handesk Datagram v2)
+pub const PACKET_HELLO: u8 = 0x01;
+pub const PACKET_PING_LEGACY: u8 = 0x02;
+pub const PACKET_PONG_LEGACY: u8 = 0x03;
+pub const PACKET_VIDEO: u8 = 0x06;
+pub const PACKET_INPUT: u8 = 0x07;
+pub const PACKET_AUDIO: u8 = 0x08;
+pub const PACKET_SETTINGS: u8 = 0x09;
+pub const PACKET_REQUEST_IDR: u8 = 0x0A;
+pub const PACKET_PING: u8 = 0x0B;
+pub const PACKET_PONG: u8 = 0x0C;
+pub const PACKET_RESOLUTION: u8 = 0x0D;
 
-static MIN_RTT_MS: AtomicU32 = AtomicU32::new(9999);
-static SMOOTHED_RTT_MS: AtomicU32 = AtomicU32::new(50);
-static CONSECUTIVE_CLEAN: AtomicU32 = AtomicU32::new(0);
-static LAST_RTT_RESET: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
-
-pub fn handle_rtt_pong(rtt_ms: u32) {
-    if rtt_ms == 0 || rtt_ms > 3000 {
-        return;
-    }
-
-    let mut last_reset = LAST_RTT_RESET.lock().unwrap();
-    let now = std::time::Instant::now();
-    let need_reset = match *last_reset {
-        Some(t) => now.duration_since(t).as_secs() >= 10,
-        None => true,
-    };
-    if need_reset {
-        *last_reset = Some(now);
-        MIN_RTT_MS.store(rtt_ms, Ordering::Relaxed);
-    } else {
-        let current_min = MIN_RTT_MS.load(Ordering::Relaxed);
-        if rtt_ms < current_min {
-            MIN_RTT_MS.store(rtt_ms, Ordering::Relaxed);
-        }
-    }
-
-    let min_rtt = MIN_RTT_MS.load(Ordering::Relaxed);
-    let prev_srtt = SMOOTHED_RTT_MS.load(Ordering::Relaxed);
-    let srtt = (prev_srtt * 7 + rtt_ms * 3) / 10;
-    SMOOTHED_RTT_MS.store(srtt, Ordering::Relaxed);
-
-    // ONLY adjust bitrate dynamically if user explicitly enabled AUTO mode!
-    // If the user selected 1080p HD, 1440p, or 720p, preserve their chosen quality completely.
-    if !crate::capture::AUTO_BITRATE_ENABLED.load(Ordering::Relaxed) {
-        return;
-    }
-
-    let base_bitrate = crate::capture::CONFIGURED_BITRATE.load(Ordering::Relaxed);
-    let current_bitrate = crate::capture::TARGET_BITRATE.load(Ordering::Relaxed);
-
-    // True WAN Bufferbloat detection: RTT elevated by > 80ms over physical baseline indicates persistent queue buildup
-    let is_congested = rtt_ms > min_rtt + 80 && srtt > min_rtt + 60;
-
-    if is_congested {
-        CONSECUTIVE_CLEAN.store(0, Ordering::Relaxed);
-        let backed_off = (current_bitrate * 85 / 100).max(4_000_000);
-        if backed_off < current_bitrate {
-            crate::capture::TARGET_BITRATE.store(backed_off, Ordering::Relaxed);
-            info!("WAN Bufferbloat detected (RTT: {}ms, min: {}ms). Throttling bitrate: {} -> {} bps", 
-                rtt_ms, min_rtt, current_bitrate, backed_off);
-        }
-    } else if rtt_ms <= min_rtt + 40 {
-        let clean = CONSECUTIVE_CLEAN.fetch_add(1, Ordering::Relaxed) + 1;
-        // After 4 consecutive clean pings (~2 seconds of uncongested pipe), probe back towards configured bitrate
-        if clean >= 4 && current_bitrate < base_bitrate {
-            CONSECUTIVE_CLEAN.store(0, Ordering::Relaxed);
-            let ramped = (current_bitrate + 1_000_000).min(base_bitrate);
-            crate::capture::TARGET_BITRATE.store(ramped, Ordering::Relaxed);
-            info!("Path stable (RTT: {}ms). Ramping bitrate: {} -> {} bps", 
-                rtt_ms, current_bitrate, ramped);
-        }
-    }
-}
-
+pub static SMOOTHED_RTT_MS: AtomicU32 = AtomicU32::new(0);
 pub static VIDEO_SOCKET: OnceLock<std::net::UdpSocket> = OnceLock::new();
 pub static ACTIVE_CLIENT: RwLock<Option<SocketAddr>> = RwLock::new(None);
 static VIDEO_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
+pub fn is_tailscale_ip(addr: &SocketAddr) -> bool {
+    match addr.ip() {
+        std::net::IpAddr::V4(ipv4) => ipv4.octets()[0] == 100,
+        std::net::IpAddr::V6(ipv6) => {
+            let segs = ipv6.segments();
+            segs[0] == 0xfd7a && segs[1] == 0x115c && segs[2] == 0xa1e0
+        }
+    }
+}
 
 /// Zero-latency direct UDP transmission from the hardware encoder thread
 pub fn broadcast_video_frame(nalu: &[u8]) {
@@ -99,16 +48,20 @@ pub fn broadcast_video_frame(nalu: &[u8]) {
         None => return,
     };
 
-    let seq = VIDEO_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let total_chunks = ((nalu.len() + MAX_UDP_PAYLOAD - 1) / MAX_UDP_PAYLOAD) as u16;
+    let is_ts = crate::capture::IS_TAILSCALE_CLIENT.load(Ordering::Relaxed);
+    // 1400 bytes on Ethernet LAN, 1100 bytes on Tailscale/WireGuard WAN (zero IP fragmentation)
+    let max_payload: usize = if is_ts { 1100 } else { 1400 };
 
-    let mut packet_buf = [0u8; 15 + MAX_UDP_PAYLOAD];
+    let seq = VIDEO_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let total_chunks = ((nalu.len() + max_payload - 1) / max_payload) as u16;
+
+    let mut packet_buf = vec![0u8; 15 + max_payload];
     packet_buf[0..4].copy_from_slice(&MAGIC_BYTES);
     packet_buf[4] = PACKET_VIDEO;
     packet_buf[5..9].copy_from_slice(&seq.to_le_bytes());
     packet_buf[11..13].copy_from_slice(&total_chunks.to_le_bytes());
 
-    for (chunk_index, chunk) in nalu.chunks(MAX_UDP_PAYLOAD).enumerate() {
+    for (chunk_index, chunk) in nalu.chunks(max_payload).enumerate() {
         let chunk_len = chunk.len() as u16;
         packet_buf[9..11].copy_from_slice(&(chunk_index as u16).to_le_bytes());
         packet_buf[13..15].copy_from_slice(&chunk_len.to_le_bytes());
@@ -117,17 +70,16 @@ pub fn broadcast_video_frame(nalu: &[u8]) {
         let total_packet_len = 15 + chunk.len();
         let payload = &packet_buf[..total_packet_len];
 
-        // Adaptive micro-pacing for multi-packet bursts:
-        // 20 µs on LAN, dynamically scaled to 45 µs on WAN to eliminate ISP bufferbloat and packet drops
+        // Micro-pacing: spreads multi-packet bursts evenly to avoid router buffer overflow
         if total_chunks > 4 && chunk_index > 0 {
-            let pace_micros = if SMOOTHED_RTT_MS.load(Ordering::Relaxed) > 20 { 45 } else { 20 };
-            let spin_start = std::time::Instant::now();
+            let pace_micros = if is_ts { 40 } else { 15 };
+            let spin_start = Instant::now();
             while spin_start.elapsed().as_micros() < pace_micros {
                 std::hint::spin_loop();
             }
         }
 
-        // Send with transient WouldBlock retry (handles OS socket buffer backpressure)
+        // Send with transient WouldBlock retry
         let mut retries = 0;
         loop {
             match socket.send_to(payload, remote_addr) {
@@ -148,21 +100,31 @@ pub fn broadcast_video_frame(nalu: &[u8]) {
     }
 }
 
-pub async fn start_direct_server(std_socket: std::net::UdpSocket) -> Result<()> {
+pub async fn start_udp_server() -> Result<()> {
     info!("========================================");
-    info!(" DirectLink Server Listening on UDP 21118");
-    info!(" Waiting for Android Client (Local IP)...");
+    info!(" Handesk Server Listening on UDP 21118");
+    info!(" High-Performance Pure UDP Engine");
     info!("========================================");
 
-    // Save cloned socket for the dedicated hardware capture thread
+    use socket2::Socket;
+    let std_socket = std::net::UdpSocket::bind("0.0.0.0:21118")?;
+    std_socket.set_nonblocking(true)?;
+
+    let socket2_sock: Socket = std_socket.into();
+    let _ = socket2_sock.set_send_buffer_size(4 * 1024 * 1024);
+    let _ = socket2_sock.set_recv_buffer_size(4 * 1024 * 1024);
+    let _ = socket2_sock.set_tos_v4(0xB8); // Expedited Forwarding QoS
+
+    let std_socket: std::net::UdpSocket = socket2_sock.into();
     let video_sock = std_socket.try_clone()?;
     let _ = VIDEO_SOCKET.set(video_sock);
 
     let socket = Arc::new(UdpSocket::from_std(std_socket)?);
+    let start_time = Instant::now();
 
-    // 1. Initialize dedicated OS capture thread (High-priority hardware loop)
+    // 1. Dedicated OS capture thread (High-priority hardware loop)
     std::thread::Builder::new()
-        .name("directlink-capture".into())
+        .name("handesk-capture".into())
         .spawn(move || {
             loop {
                 info!("Starting dedicated OS capture thread");
@@ -170,13 +132,13 @@ pub async fn start_direct_server(std_socket: std::net::UdpSocket) -> Result<()> 
                     error!("Capture loop exited: {:?}. Restarting in 500ms...", e);
                 }
                 std::thread::sleep(std::time::Duration::from_millis(500));
-                crate::capture::FORCE_IDR.store(true, std::sync::atomic::Ordering::Relaxed);
+                crate::capture::FORCE_IDR.store(true, Ordering::Relaxed);
             }
         })
         .expect("Failed to spawn capture thread");
 
-    // 2. Initialize persistent audio capture loop (SINGLETON, auto-restarting)
-    let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<u8>>(50);
+    // 2. Persistent audio capture loop
+    let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<u8>>(100);
     tokio::spawn(async move {
         loop {
             if let Err(e) = crate::audio::start_audio_loop(audio_tx.clone()).await {
@@ -186,37 +148,26 @@ pub async fn start_direct_server(std_socket: std::net::UdpSocket) -> Result<()> 
         }
     });
 
-    // 3. Persistent AUDIO sender loop
+    // 3. Persistent AUDIO direct UDP sender loop (Zero chunking, 1 UDP datagram per Opus frame)
     let socket_audio = socket.clone();
     tokio::spawn(async move {
-        let mut audio_sequence: u32 = 0;
-        while let Some(pcm) = audio_rx.recv().await {
+        while let Some(opus_data) = audio_rx.recv().await {
             let remote_addr = match *ACTIVE_CLIENT.read().unwrap() {
                 Some(addr) => addr,
                 None => continue,
             };
-            audio_sequence = audio_sequence.wrapping_add(1);
-            let audio_mtu = 1200;
-            let total_chunks = ((pcm.len() + audio_mtu - 1) / audio_mtu) as u16;
-
-            for (chunk_index, chunk) in pcm.chunks(audio_mtu).enumerate() {
-                let mut frame = BytesMut::with_capacity(15 + chunk.len());
-                frame.extend_from_slice(&MAGIC_BYTES);
-                frame.put_u8(0x08); // PACKET_AUDIO
-                frame.put_u32_le(audio_sequence);
-                frame.put_u16_le(chunk_index as u16);
-                frame.put_u16_le(total_chunks);
-                frame.put_u16_le(chunk.len() as u16);
-                frame.extend_from_slice(chunk);
-                let _ = socket_audio.send_to(&frame, remote_addr).await;
-            }
+            let mut packet = Vec::with_capacity(5 + opus_data.len());
+            packet.extend_from_slice(&MAGIC_BYTES);
+            packet.push(PACKET_AUDIO);
+            packet.extend_from_slice(&opus_data);
+            let _ = socket_audio.send_to(&packet, remote_addr).await;
         }
     });
 
-    // 4. Background Ping sender (measures RTT every 500ms for adaptive bitrate)
+    // 4. Background PING sender (every 200ms for fast WAN RTT tracking)
     let socket_ping = socket.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
         let mut ping_buf = [0u8; 13];
         ping_buf[0..4].copy_from_slice(&MAGIC_BYTES);
         ping_buf[4] = PACKET_PING;
@@ -228,18 +179,66 @@ pub async fn start_direct_server(std_socket: std::net::UdpSocket) -> Result<()> 
                 None => continue,
             };
 
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-
-            ping_buf[5..13].copy_from_slice(&now_ms.to_le_bytes());
+            let now_us = start_time.elapsed().as_micros() as u64;
+            ping_buf[5..13].copy_from_slice(&now_us.to_le_bytes());
             let _ = socket_ping.send_to(&ping_buf, remote_addr).await;
         }
     });
 
-    // 5. UDP Receive Loop (Command & Control)
-    let mut buf = vec![0u8; 2048];
+    // 5. Dynamic Desktop Resolution change detection loop
+    let socket_res = socket.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(300));
+        let mut last_w = 0u32;
+        let mut last_h = 0u32;
+        loop {
+            interval.tick().await;
+            let remote_addr = match *ACTIVE_CLIENT.read().unwrap() {
+                Some(addr) => addr,
+                None => continue,
+            };
+            let w = crate::capture::DESKTOP_WIDTH.load(Ordering::Relaxed);
+            let h = crate::capture::DESKTOP_HEIGHT.load(Ordering::Relaxed);
+            if (w != last_w || h != last_h) && w > 0 && h > 0 {
+                last_w = w;
+                last_h = h;
+                info!("Sending Desktop Resolution update to client: {}x{}", w, h);
+                let mut res_pkt = Vec::with_capacity(13);
+                res_pkt.extend_from_slice(&MAGIC_BYTES);
+                res_pkt.push(PACKET_RESOLUTION);
+                res_pkt.extend_from_slice(&w.to_le_bytes());
+                res_pkt.extend_from_slice(&h.to_le_bytes());
+                let _ = socket_res.send_to(&res_pkt, remote_addr).await;
+            }
+        }
+    });
+
+    // 6. Periodic 1-second telemetry logging
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(1000));
+        loop {
+            interval.tick().await;
+            let client = *ACTIVE_CLIENT.read().unwrap();
+            if let Some(c_addr) = client {
+                let cur_rtt = SMOOTHED_RTT_MS.load(Ordering::Relaxed);
+                let cur_bitrate = crate::capture::TARGET_BITRATE.load(Ordering::Relaxed);
+                let cur_fps = crate::capture::TARGET_FPS.load(Ordering::Relaxed);
+                let auto = crate::capture::AUTO_BITRATE_ENABLED.load(Ordering::Relaxed);
+                let is_ts = is_tailscale_ip(&c_addr);
+                info!(
+                    "[HOST UDP TELEMETRY] Profile: {} | RTT: {}ms | Target Bitrate: {:.2} Mbps | Target FPS: {} | Auto: {}",
+                    if is_ts { "TAILSCALE WAN (1100 MTU)" } else { "LOCAL LAN (1400 MTU unconstrained)" },
+                    cur_rtt,
+                    cur_bitrate as f64 / 1_000_000.0,
+                    cur_fps,
+                    auto
+                );
+            }
+        }
+    });
+
+    // 7. Main UDP Receive Loop (Command & Control)
+    let mut buf = vec![0u8; 4096];
     loop {
         let (len, remote_addr) = match socket.recv_from(&mut buf).await {
             Ok(res) => res,
@@ -256,36 +255,111 @@ pub async fn start_direct_server(std_socket: std::net::UdpSocket) -> Result<()> 
         let packet_type = buf[4];
         match packet_type {
             PACKET_HELLO => {
-                let _ = socket.send_to(&buf[0..len], remote_addr).await;
+                info!("Received UDP HELLO from {remote_addr}. Initializing Handesk session.");
+                let is_ts = is_tailscale_ip(&remote_addr);
+                crate::capture::IS_TAILSCALE_CLIENT.store(is_ts, Ordering::Relaxed);
+
+                if is_ts {
+                    info!("Client {remote_addr} connected via TAILSCALE WAN - 1100 MTU, 60 FPS cap, 40µs micro-pacing");
+                    crate::capture::TARGET_FPS.store(60, Ordering::Relaxed);
+                } else {
+                    info!("Client {remote_addr} connected via LOCAL LAN - 1400 MTU, unconstrained 50+ Mbps, up to 144 FPS");
+                    let manual_bitrate = crate::capture::CONFIGURED_BITRATE.load(Ordering::Relaxed);
+                    crate::capture::TARGET_BITRATE.store(manual_bitrate.max(50_000_000), Ordering::Relaxed);
+                    crate::capture::TARGET_FPS.store(144, Ordering::Relaxed);
+                    crate::capture::TARGET_GOP.store(240, Ordering::Relaxed);
+                }
+
                 *ACTIVE_CLIENT.write().unwrap() = Some(remote_addr);
-                crate::capture::FORCE_IDR.store(true, std::sync::atomic::Ordering::Relaxed);
-                info!("CLIENT CONNECTED: {:?}. Active stream routed instantly!", remote_addr);
+                crate::capture::FORCE_IDR.store(true, Ordering::Relaxed);
+
+                // Echo HELLO handshake back to client
+                let _ = socket.send_to(&buf[0..len], remote_addr).await;
+
+                // Send immediate Desktop Resolution handshake
+                let w = crate::capture::DESKTOP_WIDTH.load(Ordering::Relaxed);
+                let h = crate::capture::DESKTOP_HEIGHT.load(Ordering::Relaxed);
+                if w > 0 && h > 0 {
+                    let mut res_pkt = Vec::with_capacity(13);
+                    res_pkt.extend_from_slice(&MAGIC_BYTES);
+                    res_pkt.push(PACKET_RESOLUTION);
+                    res_pkt.extend_from_slice(&w.to_le_bytes());
+                    res_pkt.extend_from_slice(&h.to_le_bytes());
+                    let _ = socket.send_to(&res_pkt, remote_addr).await;
+                }
             }
-            PACKET_PONG => {
+            PACKET_PONG | PACKET_PONG_LEGACY => {
                 if len >= 13 {
-                    let sent_time = u64::from_le_bytes(buf[5..13].try_into().unwrap());
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    let rtt_ms = (now_ms.saturating_sub(sent_time)) as u32;
-                    handle_rtt_pong(rtt_ms);
+                    let mut ts_bytes = [0u8; 8];
+                    ts_bytes.copy_from_slice(&buf[5..13]);
+                    let sent_us = u64::from_le_bytes(ts_bytes);
+                    let now_us = start_time.elapsed().as_micros() as u64;
+                    if now_us >= sent_us {
+                        let rtt_us = now_us - sent_us;
+                        let rtt_ms = (rtt_us / 1000) as u32;
+                        let old_rtt = SMOOTHED_RTT_MS.load(Ordering::Relaxed);
+                        let new_smoothed = if old_rtt == 0 {
+                            rtt_ms
+                        } else if rtt_ms < old_rtt {
+                            (old_rtt * 2 + rtt_ms * 6) / 8
+                        } else {
+                            (old_rtt * 6 + rtt_ms * 2) / 8
+                        };
+                        SMOOTHED_RTT_MS.store(new_smoothed, Ordering::Relaxed);
+
+                        let client_rx_bps = if len >= 17 {
+                            let mut rx_bytes = [0u8; 4];
+                            rx_bytes.copy_from_slice(&buf[13..17]);
+                            (u32::from_le_bytes(rx_bytes) as u64) * 8
+                        } else {
+                            0
+                        };
+
+                        let is_ts = is_tailscale_ip(&remote_addr);
+                        if is_ts {
+                            if old_rtt > 15 && rtt_ms > old_rtt * 3 {
+                                info!("Tailscale path switch detected (RTT: {}ms -> {}ms), triggering IDR", old_rtt, rtt_ms);
+                                crate::capture::FORCE_IDR.store(true, Ordering::Relaxed);
+                            }
+
+                            let auto_enabled = crate::capture::AUTO_BITRATE_ENABLED.load(Ordering::Relaxed);
+                            if auto_enabled {
+                                let (mut adaptive_bitrate, adaptive_fps, gop_frames) = if new_smoothed < 40 {
+                                    (12_000_000, 60, 180)
+                                } else if new_smoothed < 80 {
+                                    (8_000_000, 60, 120)
+                                } else if new_smoothed < 130 {
+                                    (4_500_000, 30, 90)
+                                } else {
+                                    (2_500_000, 30, 60)
+                                };
+
+                                if client_rx_bps > 0 && client_rx_bps < (adaptive_bitrate as u64) * 8 / 10 {
+                                    adaptive_bitrate = ((client_rx_bps * 9 / 10) as u32).clamp(1_500_000, 12_000_000);
+                                }
+
+                                crate::capture::TARGET_BITRATE.store(adaptive_bitrate, Ordering::Relaxed);
+                                crate::capture::TARGET_FPS.store(adaptive_fps, Ordering::Relaxed);
+                                crate::capture::TARGET_GOP.store(gop_frames, Ordering::Relaxed);
+                            }
+                        }
+                    }
                 }
             }
             PACKET_INPUT => {
                 crate::input::handle_input_payload(&buf[5..len]);
             }
             PACKET_REQUEST_IDR => {
-                crate::capture::FORCE_IDR.store(true, std::sync::atomic::Ordering::Relaxed);
-                info!("Client requested IDR frame via UDP (0x0A)");
+                crate::capture::FORCE_IDR.store(true, Ordering::Relaxed);
+                info!("Client requested IDR keyframe via UDP (0x0A)");
             }
             PACKET_SETTINGS => {
                 if len >= 13 {
                     let fps = u32::from_le_bytes(buf[5..9].try_into().unwrap());
                     let bitrate = u32::from_le_bytes(buf[9..13].try_into().unwrap());
-                    crate::capture::TARGET_FPS.store(fps, std::sync::atomic::Ordering::Relaxed);
-                    crate::capture::CONFIGURED_BITRATE.store(bitrate, std::sync::atomic::Ordering::Relaxed);
-                    crate::capture::TARGET_BITRATE.store(bitrate, std::sync::atomic::Ordering::Relaxed);
+                    crate::capture::TARGET_FPS.store(fps, Ordering::Relaxed);
+                    crate::capture::CONFIGURED_BITRATE.store(bitrate, Ordering::Relaxed);
+                    crate::capture::TARGET_BITRATE.store(bitrate, Ordering::Relaxed);
                     info!("Client requested settings change: {} FPS, {} bps", fps, bitrate);
                 }
             }
@@ -293,47 +367,3 @@ pub async fn start_direct_server(std_socket: std::net::UdpSocket) -> Result<()> 
         }
     }
 }
-
-pub async fn start_relay_client(relay_ip: &str, relay_port: u16, session_id: &str) -> Result<()> {
-    let std_socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
-    std_socket.set_nonblocking(true)?;
-    let socket2_sock: socket2::Socket = std_socket.into();
-    let _ = socket2_sock.set_send_buffer_size(4 * 1024 * 1024);
-    let _ = socket2_sock.set_recv_buffer_size(4 * 1024 * 1024);
-    let std_socket: std::net::UdpSocket = socket2_sock.into();
-    let _ = VIDEO_SOCKET.set(std_socket.try_clone()?);
-    let socket = Arc::new(UdpSocket::from_std(std_socket)?);
-    let remote_addr: SocketAddr = format!("{}:{}", relay_ip, relay_port).parse()?;
-
-    // Bind to Relay
-    let bind_msg = format!("BIND:{}:HOST", session_id);
-    socket.send_to(bind_msg.as_bytes(), remote_addr).await?;
-
-    info!("========================================");
-    info!(" DIRECTLINK RELAY AUTHENTICATED");
-    info!(" Streaming Video via UDP Relay!");
-    info!("========================================");
-
-    *ACTIVE_CLIENT.write().unwrap() = Some(remote_addr);
-    crate::capture::FORCE_IDR.store(true, std::sync::atomic::Ordering::Relaxed);
-
-    let mut buf = vec![0u8; 2048];
-    loop {
-        let (len, src) = socket.recv_from(&mut buf).await?;
-        if src != remote_addr {
-            continue;
-        }
-
-        let payload = &buf[..len];
-        if payload == b"BIND_OK" {
-            continue;
-        }
-
-        if len >= 5 && &payload[0..4] == &MAGIC_BYTES {
-            if payload[4] == PACKET_INPUT {
-                crate::input::handle_input_payload(&payload[5..len]);
-            }
-        }
-    }
-}
-
