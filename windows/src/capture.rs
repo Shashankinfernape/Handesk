@@ -27,6 +27,7 @@ pub static TARGET_GOP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU
 pub static DESKTOP_WIDTH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1920);
 pub static DESKTOP_HEIGHT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1080);
 pub static FORCE_IDR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static IS_TAILSCALE_CLIENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[link(name = "user32")]
 extern "system" {
@@ -473,12 +474,20 @@ pub fn start_capture_loop() -> Result<()> {
         }
 
         let rtt = crate::network_kcp::SMOOTHED_RTT_MS.load(std::sync::atomic::Ordering::Relaxed);
+        let is_tailscale = IS_TAILSCALE_CLIENT.load(std::sync::atomic::Ordering::Relaxed);
 
-        // Handle IDR request (Fast recovery: 50ms min throttle instead of 250ms)
-        let idr_throttle_ms = (50u64).max(rtt as u64).min(500);
+        // IDR recovery throttle:
+        // LAN: ultra-fast 10ms throttle (zero artificial delay)
+        // Tailscale (100.x.x.x): 50ms..500ms scaled by RTT to prevent WAN congestion
+        let idr_throttle_ms = if is_tailscale {
+            (50u64).max(rtt as u64).min(500)
+        } else {
+            10u64
+        };
+
         if FORCE_IDR.swap(false, std::sync::atomic::Ordering::Relaxed) {
             if last_idr.elapsed() >= Duration::from_millis(idr_throttle_ms) {
-                info!("Triggering instantaneous IDR keyframe (RTT: {}ms)", rtt);
+                info!("Triggering instantaneous IDR keyframe (RTT: {}ms, Tailscale: {})", rtt, is_tailscale);
                 encoder.force_idr();
                 last_idr = std::time::Instant::now();
             } else {
@@ -486,8 +495,11 @@ pub fn start_capture_loop() -> Result<()> {
             }
         }
 
-        // Strict microsecond-accurate FPS pacing (prevents 144Hz monitor frame-flooding over network)
-        let fps = TARGET_FPS.load(std::sync::atomic::Ordering::Relaxed).clamp(15, 144) as u64;
+        // FPS pacing:
+        // LAN: unconstrained up to 144 FPS (match high refresh monitors)
+        // Tailscale (100.x.x.x): capped to 60 FPS max to eliminate WAN router queue backlog
+        let max_fps = if is_tailscale { 60 } else { 144 };
+        let fps = TARGET_FPS.load(std::sync::atomic::Ordering::Relaxed).clamp(15, max_fps) as u64;
         let frame_interval = Duration::from_micros(1_000_000 / fps);
         let elapsed = last_frame_time.elapsed();
         if elapsed < frame_interval {
