@@ -27,6 +27,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
@@ -40,6 +41,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.*
 
@@ -157,7 +159,7 @@ fun HomeScreen(
                             prefs.edit().putString("last_ip", hostIp).apply()
                             coroutineScope.launch {
                                 isConnecting = true
-                                val err = networkClient.connectToHost(hostIp) // Back to UDP!
+                                val err = networkClient.connectToHostTcp(hostIp) // TCP Flawless Mode!
                                 isConnecting = false
                                 if (err == null) onConnected()
                                 else errorMsg = err
@@ -283,6 +285,8 @@ fun RemoteSessionScreen(
                         decoder.start()
                         videoDecoder = decoder
                         networkClient.videoFrameCallback = { nalu -> decoder.decodeNalu(nalu) }
+                        // Surface is ready NOW — ask Windows for a fresh keyframe
+                        networkClient.requestIdr()
                     }
                     override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
                     override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
@@ -331,7 +335,7 @@ fun RemoteSessionScreen(
             modifier = Modifier
                 .size(1.dp)
                 .focusRequester(focusRequester)
-                .androidx.compose.ui.focus.onFocusChanged { state ->
+                .onFocusChanged { state ->
                     isKeyboardOpen = state.isFocused
                 }
                 .onKeyEvent { keyEvent ->
@@ -374,7 +378,7 @@ fun RemoteSessionScreen(
             var qualityExpanded by remember { mutableStateOf(false) }
             var currentFps by remember { mutableStateOf(60) }
             var currentBitrate by remember { mutableStateOf(2000000) }
-            var audioEnabled by remember { mutableStateOf(AudioPlayer.isEnabled) }
+            var audioEnabled by remember { mutableStateOf(true) }
 
             Row(
                 modifier = Modifier
@@ -391,7 +395,7 @@ fun RemoteSessionScreen(
 
                 TextButton(onClick = { 
                     audioEnabled = !audioEnabled
-                    AudioPlayer.isEnabled = audioEnabled
+                    
                 }) {
                     Text(
                         if (audioEnabled) "Audio: ON" else "Audio: OFF",
@@ -412,7 +416,7 @@ fun RemoteSessionScreen(
                                 onClick = { 
                                     currentFps = fps
                                     fpsExpanded = false
-                                    networkClient.sendSettings(currentFps, currentBitrate)
+                                    // networkClient.sendSettings(currentFps, currentBitrate)
                                 }
                             )
                         }
@@ -441,7 +445,7 @@ fun RemoteSessionScreen(
                                 onClick = { 
                                     currentBitrate = bitrate
                                     qualityExpanded = false
-                                    networkClient.sendSettings(currentFps, currentBitrate)
+                                    // networkClient.sendSettings(currentFps, currentBitrate)
                                 }
                             )
                         }

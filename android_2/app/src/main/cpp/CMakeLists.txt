@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.18.1)
 project("native-lib")
 
-add_library(native-lib SHARED native-lib.cpp)
+add_library(native-lib SHARED native-lib.cpp ikcp.c)
 
 find_library(log-lib log)
 find_library(mediandk-lib mediandk)

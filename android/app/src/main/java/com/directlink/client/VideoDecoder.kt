@@ -90,11 +90,13 @@ class VideoDecoder(private val surface: Surface, width: Int, height: Int, privat
                         onVideoSizeChanged?.invoke(w, h)
                     }
                 } else if (outIndex >= 0) {
+                    DebugStats.framesDecoded++
                     decoder.releaseOutputBuffer(outIndex, true)
                 }
                 outIndex = decoder.dequeueOutputBuffer(info, 0)
             }
         } catch (e: Exception) {
+            DebugStats.lastError = "Dec Err: ${e.message}"
             e.printStackTrace()
         }
     }

@@ -47,10 +47,15 @@ class NetworkClient {
             
             inputPacketSender = { packet ->
                 try {
-                    // Send directly over TCP. We don't even need length headers for input 
-                    // since our Windows reader is just reading chunks and passing to input handler!
-                    // Wait, Windows expects UDP, so it reads packet by packet.
-                    // For TCP, we can just write the 15-byte packet directly!
+                    // TCP REQUIRES LENGTH HEADER
+                    val len = packet.size
+                    val lenBytes = ByteArray(4)
+                    lenBytes[0] = (len and 0xFF).toByte()
+                    lenBytes[1] = ((len shr 8) and 0xFF).toByte()
+                    lenBytes[2] = ((len shr 16) and 0xFF).toByte()
+                    lenBytes[3] = ((len shr 24) and 0xFF).toByte()
+                    
+                    output.write(lenBytes)
                     output.write(packet)
                     output.flush()
                 } catch(e: Exception){}
@@ -96,11 +101,26 @@ class NetworkClient {
                             read += r
                         }
                         
-                        // Removed IDR manual byte parsing! Let the hardware decoder handle it.
-                        DebugStats.framesCompleted++
-                        decoderChannel.trySend(frameData)
+                        // Strip DLP1 + Type header if present
+                        if (len > 5 && frameData[0] == 'D'.code.toByte() && frameData[1] == 'L'.code.toByte() && frameData[2] == 'P'.code.toByte() && frameData[3] == '1'.code.toByte()) {
+                            when (frameData[4].toInt()) {
+                                0x06 -> { // Video
+                                    val pureNalu = frameData.copyOfRange(5, len)
+                                    DebugStats.framesCompleted++
+                                    println("DirectLink: Got video frame ${pureNalu.size} bytes, sending to decoder")
+                                    decoderChannel.trySend(pureNalu)
+                                }
+                                0x08 -> { /* Audio — ignore for now, don't crash */ }
+                                else -> { /* Unknown packet type — ignore */ }
+                            }
+                        } else {
+                            // Raw NALU (no header)
+                            DebugStats.framesCompleted++
+                            decoderChannel.trySend(frameData)
+                        }
                     }
                 } catch (e: Exception) {
+                    println("DirectLink: TCP receive loop crashed: ${e.message}")
                     e.printStackTrace()
                 }
             }
@@ -338,6 +358,18 @@ class NetworkClient {
         payload[1] = vkCode.toByte()
         payload[2] = if (down) 1 else 0
         sendInputPacket(payload)
+    }
+
+    /** Send IDR request to Windows — call this the moment the surface/decoder is ready */
+    fun requestIdr() {
+        scope.launch {
+            try {
+                println("DirectLink: Requesting IDR keyframe from Windows")
+                // Build: 4-byte len + DLP1 + 0x0A (REQUEST_IDR)
+                val packet = byteArrayOf('D'.code.toByte(), 'L'.code.toByte(), 'P'.code.toByte(), '1'.code.toByte(), 0x0A)
+                inputPacketSender?.invoke(packet)
+            } catch (e: Exception) { e.printStackTrace() }
+        }
     }
 
     fun disconnect() {

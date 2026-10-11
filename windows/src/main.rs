@@ -7,6 +7,7 @@ mod capture;
 mod encoder;
 mod input;
 mod network;
+mod network_kcp;
 mod network_tcp;
 mod network_udp;
 mod signaling;

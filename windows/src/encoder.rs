@@ -9,9 +9,9 @@ fn pack_ratio(high: u32, low: u32) -> u64 {
     ((high as u64) << 32) | (low as u64)
 }
 
-/// VBV buffer size in bits: strictly capped (~30 KB) so IDR keyframes fit in <= 35 UDP packets over WAN.
+/// VBV buffer size in bits: 150ms buffer headroom for silky-smooth 60fps CBR streaming without latency build-up.
 fn vbv_bits(bitrate: u32) -> u32 {
-    (bitrate / 60).saturating_mul(2).clamp(180_000, 240_000)
+    (bitrate / 6).clamp(1_200_000, 3_500_000)
 }
 
 pub struct MFEncoder {
@@ -103,7 +103,7 @@ impl MFEncoder {
                 let var_gop = windows::core::VARIANT::from(300u32);
                 let _ = codec_api.SetValue(&CODECAPI_AVEncMPVGOPSize, &var_gop);
 
-                // Rate Control Mode: 0 = CBR (constant low-latency, prevents UDP packet bursts)
+                // Rate Control Mode: 0 = CBR (Rock-solid constant high bitrate, preventing quantization drops)
                 let var_rate_control = windows::core::VARIANT::from(0u32);
                 let _ = codec_api.SetValue(&CODECAPI_AVEncCommonRateControlMode, &var_rate_control);
 
@@ -111,9 +111,6 @@ impl MFEncoder {
                 let _ = codec_api.SetValue(&CODECAPI_AVEncCommonMeanBitRate, &var_bitrate);
                 let _ = codec_api.SetValue(&CODECAPI_AVEncCommonMaxBitRate, &var_bitrate);
 
-                // CRITICAL: Cap the VBV buffer so no single frame (incl. keyframes) exceeds
-                // ~2 frames worth of bits. Without this, IDRs hit 150 KB = 150 UDP packets,
-                // one lost packet kills the frame, client asks for another IDR -> stuck loop.
                 let var_buf = windows::core::VARIANT::from(vbv_bits(default_bitrate));
                 let hr = codec_api.SetValue(&CODECAPI_AVEncCommonBufferSize, &var_buf);
                 info!("VBV buffer cap set: {} bits ({:?}) for {} bps", vbv_bits(default_bitrate), hr, default_bitrate);
@@ -156,6 +153,15 @@ impl MFEncoder {
                 let _ = codec_api.SetValue(&CODECAPI_AVEncCommonMaxBitRate, &var_bitrate);
                 let var_buf = windows::core::VARIANT::from(vbv_bits(bitrate));
                 let _ = codec_api.SetValue(&CODECAPI_AVEncCommonBufferSize, &var_buf);
+            }
+        }
+    }
+
+    pub fn set_gop_size(&self, gop: u32) {
+        unsafe {
+            if let Ok(codec_api) = self.transform.cast::<ICodecAPI>() {
+                let var_gop = windows::core::VARIANT::from(gop);
+                let _ = codec_api.SetValue(&CODECAPI_AVEncMPVGOPSize, &var_gop);
             }
         }
     }
