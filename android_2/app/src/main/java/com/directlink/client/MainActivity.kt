@@ -511,6 +511,17 @@ fun RemoteSessionScreen(
     var showSpecialKeys by remember { mutableStateOf(false) }
     var isKeyboardClosingPhase by remember { mutableStateOf(false) }
     var isLandscape by remember { mutableStateOf(true) }
+    var desktopAspectRatio by remember { mutableStateOf(16f / 9f) }
+
+    LaunchedEffect(networkClient) {
+        networkClient.onResolutionUpdateListener = { width, height ->
+            if (width > 0 && height > 0) {
+                val ratio = width.toFloat() / height.toFloat()
+                android.util.Log.i("MainActivity", "Adopting Windows host aspect ratio: ${width}x${height} (ratio=$ratio)")
+                desktopAspectRatio = ratio
+            }
+        }
+    }
     val activeModifiers = remember { mutableStateListOf<Int>() }
     var textBuffer by remember { mutableStateOf("") }
     
@@ -710,7 +721,7 @@ fun RemoteSessionScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .wrapContentSize(Alignment.Center)
-                    .aspectRatio(16f / 9f, matchHeightConstraintsFirst = isLandscape)
+                    .aspectRatio(desktopAspectRatio, matchHeightConstraintsFirst = isLandscape)
                     .graphicsLayer {
                         scaleX = viewportScale.value
                         scaleY = viewportScale.value

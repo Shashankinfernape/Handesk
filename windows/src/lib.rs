@@ -8,6 +8,7 @@ pub mod input;
 mod network;
 mod network_tcp;
 pub mod network_udp;
+pub mod network_kcp;
 mod signaling;
 mod transport;
 
@@ -36,18 +37,8 @@ pub extern "C" fn start_directlink_backend() {
         .unwrap();
 
     rt.spawn(async {
-        info!("Starting DirectLink Host (DLL Mode)...");
-        use socket2::Socket;
-        let std_socket = std::net::UdpSocket::bind("0.0.0.0:21118").unwrap();
-        std_socket.set_nonblocking(true).unwrap();
-
-        let socket2_sock: Socket = std_socket.into();
-        let _ = socket2_sock.set_send_buffer_size(4 * 1024 * 1024);
-        let _ = socket2_sock.set_recv_buffer_size(4 * 1024 * 1024);
-        let _ = socket2_sock.set_tos_v4(0xB8);
-
-        let std_socket: std::net::UdpSocket = socket2_sock.into();
-        if let Err(e) = network_udp::start_direct_server(std_socket).await {
+        info!("Starting DirectLink Host (KCP Mode)...");
+        if let Err(e) = network_kcp::start_kcp_server().await {
             error!("Server crashed: {:?}", e);
         }
     });

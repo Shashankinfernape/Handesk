@@ -33,10 +33,16 @@ class NativeClient {
     private val pcmBuffer = ShortArray(5760 * 2)
 
     var onStatusUpdateListener: ((Int, Int) -> Unit)? = null
+    var onResolutionUpdateListener: ((Int, Int) -> Unit)? = null
 
     // Called from C++ JNI when an 0x09 Status packet arrives
     fun onStatusUpdate(fps: Int, bitrate: Int) {
         onStatusUpdateListener?.invoke(fps, bitrate)
+    }
+
+    // Called from C++ JNI when an 0x0D Resolution packet arrives
+    fun onResolutionUpdate(width: Int, height: Int) {
+        onResolutionUpdateListener?.invoke(width, height)
     }
 
     // Called from C++ JNI when an 0x08 Opus packet arrives
