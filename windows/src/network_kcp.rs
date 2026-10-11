@@ -19,6 +19,16 @@ lazy_static::lazy_static! {
     pub static ref ACTIVE_AUDIO_TX: std::sync::RwLock<Option<mpsc::Sender<Bytes>>> = std::sync::RwLock::new(None);
 }
 
+pub fn is_tailscale_ip(addr: &SocketAddr) -> bool {
+    match addr.ip() {
+        std::net::IpAddr::V4(ipv4) => ipv4.octets()[0] == 100,
+        std::net::IpAddr::V6(ipv6) => {
+            let segs = ipv6.segments();
+            segs[0] == 0xfd7a && segs[1] == 0x115c && segs[2] == 0xa1e0
+        }
+    }
+}
+
 struct UdpOutput {
     socket: Arc<std::net::UdpSocket>,
     addr: SocketAddr,
@@ -144,8 +154,14 @@ pub async fn start_kcp_server() -> Result<()> {
                 let cur_bitrate = crate::capture::TARGET_BITRATE.load(std::sync::atomic::Ordering::Relaxed);
                 let cur_fps = crate::capture::TARGET_FPS.load(std::sync::atomic::Ordering::Relaxed);
                 let auto = crate::capture::AUTO_BITRATE_ENABLED.load(std::sync::atomic::Ordering::Relaxed);
+                let is_ts = if let Some(ref c_addr) = client_addr {
+                    is_tailscale_ip(c_addr)
+                } else {
+                    false
+                };
                 info!(
-                    "[HOST TELEMETRY] RTT: {}ms | KCP wait_snd: {} pkts | Target Bitrate: {:.2} Mbps | Target FPS: {} | AutoMode: {}",
+                    "[HOST TELEMETRY] Profile: {} | RTT: {}ms | KCP wait_snd: {} pkts | Target Bitrate: {:.2} Mbps | Target FPS: {} | AutoMode: {}",
+                    if is_ts { "TAILSCALE (WAN limits)" } else { "LOCAL LAN (Unconstrained)" },
                     cur_rtt,
                     wait_snd,
                     cur_bitrate as f64 / 1_000_000.0,
@@ -180,15 +196,32 @@ pub async fn start_kcp_server() -> Result<()> {
                 client_addr = Some(addr);
                 crate::capture::FORCE_IDR.store(true, std::sync::atomic::Ordering::Relaxed);
                 
+                let is_ts = is_tailscale_ip(&addr);
+                crate::capture::IS_TAILSCALE_CLIENT.store(is_ts, std::sync::atomic::Ordering::Relaxed);
+
                 let output = UdpOutput {
                     socket: socket.clone(),
                     addr,
                 };
                 
                 let mut new_kcp = Kcp::new_stream(0x11223344, output);
-                new_kcp.set_nodelay(true, 5, 2, true); // 5ms nodelay interval for ultra-low latency
-                new_kcp.set_wndsize(2048, 2048);
-                let _ = new_kcp.set_mtu(1100); // 1100 MTU guarantees zero fragmentation over Tailscale/WireGuard
+                if is_ts {
+                    info!("Client {addr} connected via TAILSCALE WAN (100.x.x.x) - applying WAN profile: 1100 MTU, 5ms nodelay, 2048 wnd");
+                    new_kcp.set_nodelay(true, 5, 2, true);
+                    new_kcp.set_wndsize(2048, 2048);
+                    let _ = new_kcp.set_mtu(1100); // 1100 MTU guarantees zero fragmentation over Tailscale/WireGuard
+                } else {
+                    info!("Client {addr} connected via LOCAL LAN - REMOVING ALL LIMITATIONS: 1472 MTU, 1ms nodelay, 4096 wnd, unconstrained 50 Mbps, up to 144 FPS");
+                    new_kcp.set_nodelay(true, 1, 2, true); // 1ms fastest local dispatch
+                    new_kcp.set_wndsize(4096, 4096);       // Full 4096 buffer
+                    let _ = new_kcp.set_mtu(1472);         // Full Ethernet MTU (1500 - 20 - 8)
+
+                    // Unlock LAN high-fidelity bitrate and up to 144 FPS immediately
+                    let manual_bitrate = crate::capture::CONFIGURED_BITRATE.load(std::sync::atomic::Ordering::Relaxed);
+                    crate::capture::TARGET_BITRATE.store(manual_bitrate.max(50_000_000), std::sync::atomic::Ordering::Relaxed);
+                    crate::capture::TARGET_FPS.store(144, std::sync::atomic::Ordering::Relaxed);
+                    crate::capture::TARGET_GOP.store(240, std::sync::atomic::Ordering::Relaxed);
+                }
 
                 // Send native desktop resolution to client so Android decodes pixel-perfect
                 let w = crate::capture::DESKTOP_WIDTH.load(std::sync::atomic::Ordering::Relaxed);
@@ -250,12 +283,6 @@ pub async fn start_kcp_server() -> Result<()> {
                                         };
                                         SMOOTHED_RTT_MS.store(new_smoothed, std::sync::atomic::Ordering::Relaxed);
 
-                                        // Path change detection: sudden spike in latency (e.g. direct -> DERP relay)
-                                        if old_rtt > 15 && rtt_ms > old_rtt * 3 {
-                                            info!("Tailscale path switch detected (RTT: {}ms -> {}ms), triggering IDR", old_rtt, rtt_ms);
-                                            crate::capture::FORCE_IDR.store(true, std::sync::atomic::Ordering::Relaxed);
-                                        }
-
                                         // Read client reported throughput (from bytes 13..17 of PONG)
                                         let client_rx_bps = if pkt_len >= 17 {
                                             let mut rx_bytes = [0u8; 4];
@@ -265,35 +292,51 @@ pub async fn start_kcp_server() -> Result<()> {
                                             0
                                         };
 
-                                        // Only adjust bitrate and FPS if AUTO mode is enabled!
-                                        // If manual mode, respect user's manual FPS and bitrate choices completely.
-                                        let auto_enabled = crate::capture::AUTO_BITRATE_ENABLED.load(std::sync::atomic::Ordering::Relaxed);
-                                        if auto_enabled {
-                                            let (mut adaptive_bitrate, adaptive_fps, gop_frames) = if new_smoothed < 40 {
-                                                (12_000_000, 60, 180)
-                                            } else if new_smoothed < 80 {
-                                                (8_000_000, 60, 120)
-                                            } else if new_smoothed < 130 {
-                                                (4_500_000, 30, 90)
-                                            } else {
-                                                (2_500_000, 30, 60)
-                                            };
+                                        let is_ts = if let Some(ref c_addr) = client_addr {
+                                            is_tailscale_ip(c_addr)
+                                        } else {
+                                            false
+                                        };
 
-                                            // Never push more data than the client link has demonstrated it can absorb
-                                            if client_rx_bps > 0 && client_rx_bps < (adaptive_bitrate as u64) * 8 / 10 {
-                                                adaptive_bitrate = ((client_rx_bps * 9 / 10) as u32).clamp(1_500_000, 12_000_000);
+                                        if is_ts {
+                                            // Tailscale WAN: path change detection (e.g. direct -> DERP relay)
+                                            if old_rtt > 15 && rtt_ms > old_rtt * 3 {
+                                                info!("Tailscale path switch detected (RTT: {}ms -> {}ms), triggering IDR", old_rtt, rtt_ms);
+                                                crate::capture::FORCE_IDR.store(true, std::sync::atomic::Ordering::Relaxed);
                                             }
 
-                                            crate::capture::TARGET_BITRATE.store(adaptive_bitrate, std::sync::atomic::Ordering::Relaxed);
-                                            crate::capture::TARGET_FPS.store(adaptive_fps, std::sync::atomic::Ordering::Relaxed);
-                                            crate::capture::TARGET_GOP.store(gop_frames, std::sync::atomic::Ordering::Relaxed);
-                                        }
+                                            // Only adjust bitrate and FPS on WAN if AUTO mode is enabled!
+                                            let auto_enabled = crate::capture::AUTO_BITRATE_ENABLED.load(std::sync::atomic::Ordering::Relaxed);
+                                            if auto_enabled {
+                                                let (mut adaptive_bitrate, adaptive_fps, gop_frames) = if new_smoothed < 40 {
+                                                    (12_000_000, 60, 180)
+                                                } else if new_smoothed < 80 {
+                                                    (8_000_000, 60, 120)
+                                                } else if new_smoothed < 130 {
+                                                    (4_500_000, 30, 90)
+                                                } else {
+                                                    (2_500_000, 30, 60)
+                                                };
 
-                                        // Dynamic KCP interval tuning to prevent retransmission storms on high RTT
-                                        if new_smoothed > 80 {
-                                            k.set_nodelay(true, 10, 2, true);
+                                                // Never push more data than the client link has demonstrated it can absorb
+                                                if client_rx_bps > 0 && client_rx_bps < (adaptive_bitrate as u64) * 8 / 10 {
+                                                    adaptive_bitrate = ((client_rx_bps * 9 / 10) as u32).clamp(1_500_000, 12_000_000);
+                                                }
+
+                                                crate::capture::TARGET_BITRATE.store(adaptive_bitrate, std::sync::atomic::Ordering::Relaxed);
+                                                crate::capture::TARGET_FPS.store(adaptive_fps, std::sync::atomic::Ordering::Relaxed);
+                                                crate::capture::TARGET_GOP.store(gop_frames, std::sync::atomic::Ordering::Relaxed);
+                                            }
+
+                                            // Dynamic KCP interval tuning to prevent retransmission storms on high RTT WAN
+                                            if new_smoothed > 80 {
+                                                k.set_nodelay(true, 10, 2, true);
+                                            } else {
+                                                k.set_nodelay(true, 5, 2, true);
+                                            }
                                         } else {
-                                            k.set_nodelay(true, 5, 2, true);
+                                            // LOCAL LAN: NO LIMITATIONS! Maintain maximum unconstrained performance
+                                            k.set_nodelay(true, 1, 2, true);
                                         }
                                     }
                                 }
@@ -308,29 +351,33 @@ pub async fn start_kcp_server() -> Result<()> {
             }
         }
 
-        // Send Video Frames via KCP (Smooth 16KB chunks to prevent packet burst spikes)
+        // Send Video Frames via KCP (64KB chunks for LAN max speed, smooth 16KB for Tailscale WAN)
+        let is_ts = if let Some(ref c_addr) = client_addr {
+            is_tailscale_ip(c_addr)
+        } else {
+            false
+        };
+        let chunk_size = if is_ts { 16 * 1024 } else { 64 * 1024 };
+
         if let Ok(video_bytes) = video_rx.try_recv() {
             if let Some(ref mut k) = kcp {
                 let len_bytes = (video_bytes.len() as u32).to_le_bytes();
                 let _ = k.send(&len_bytes);
-                for chunk in video_bytes.chunks(16 * 1024) {
+                for chunk in video_bytes.chunks(chunk_size) {
                     let _ = k.send(chunk);
                 }
                 let _ = k.flush();
             }
         }
 
-        // Send Audio Frames via KCP
+        // Send Audio Frames directly via bare UDP (Zero KCP queuing, zero head-of-line blocking behind video!)
         if let Ok(audio_bytes) = audio_rx.try_recv() {
-            if let Some(ref mut k) = kcp {
+            if let Some(target) = client_addr {
                 let mut packet = Vec::with_capacity(5 + audio_bytes.len());
                 packet.extend_from_slice(&MAGIC_BYTES);
                 packet.push(0x08); // Audio Type
                 packet.extend_from_slice(&audio_bytes);
-                let len_bytes = (packet.len() as u32).to_le_bytes();
-                let _ = k.send(&len_bytes);
-                let _ = k.send(&packet);
-                let _ = k.flush();
+                let _ = socket.send_to(&packet, target);
             }
         }
 

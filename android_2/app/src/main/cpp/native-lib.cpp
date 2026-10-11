@@ -136,8 +136,7 @@ void decode_nalu(const std::vector<uint8_t>& data) {
                 LOGE("Input buffer too small: buf_size=%zu, frame_len=%zu", buf_size, data.size());
             }
         } else {
-            // Decoder queue full or busy! If input buffer couldn't be queued, mark recovery needed
-            needs_recovery = true;
+            // Decoder input buffer was briefly busy; do NOT freeze the screen with needs_recovery
             send_idr_request();
         }
     }
@@ -230,8 +229,17 @@ void network_loop(std::string ip) {
     g_kcp = ikcp_create(0x11223344, nullptr);
     g_kcp->output = udp_output;
     g_kcp->stream = 1; // ENABLE STREAM MODE
-    ikcp_nodelay(g_kcp, 1, 5, 2, 1); // 5ms nodelay interval for ultra-low latency
-    ikcp_wndsize(g_kcp, 2048, 2048);
+
+    bool is_tailscale = (host.rfind("100.", 0) == 0);
+    if (is_tailscale) {
+        LOGI("[PROFILE] Connecting to TAILSCALE WAN (%s) - 1100 MTU, 5ms nodelay, 2048 wnd", host.c_str());
+        ikcp_nodelay(g_kcp, 1, 5, 2, 1); // 5ms nodelay interval for WAN
+        ikcp_wndsize(g_kcp, 2048, 2048);
+    } else {
+        LOGI("[PROFILE] Connecting to LOCAL LAN (%s) - REMOVING ALL LIMITATIONS: 1472 MTU, 1ms nodelay, 4096 wnd", host.c_str());
+        ikcp_nodelay(g_kcp, 1, 1, 2, 1); // 1ms ultra-fast nodelay for LAN
+        ikcp_wndsize(g_kcp, 4096, 4096); // Full 4096 window
+    }
 
     send_idr_request();
 
@@ -253,13 +261,26 @@ void network_loop(std::string ip) {
         struct pollfd fd;
         fd.fd = udp_socket;
         fd.events = POLLIN;
-        int ret = poll(&fd, 1, 2); // 2ms sleep/wait for instant wake-up
+        int poll_timeout = is_tailscale ? 2 : 1;
+        int ret = poll(&fd, 1, poll_timeout); // 1ms wake-up on LAN, 2ms on Tailscale
         
         if (ret > 0 && (fd.revents & POLLIN)) {
             struct sockaddr_in src_addr;
             socklen_t addr_len = sizeof(src_addr);
             ssize_t len = recvfrom(udp_socket, buf.data(), buf.size(), 0, (struct sockaddr*)&src_addr, &addr_len);
             if (len > 0) {
+                // Direct UDP Audio: bypass KCP entirely for zero jitter, zero stutter!
+                if (len >= 5 && buf[0] == 'D' && buf[1] == 'L' && buf[2] == 'P' && buf[3] == '1' && buf[4] == 0x08) {
+                    if (attached && g_obj && g_onAudioData_method) {
+                        jsize pcm_len = len - 5;
+                        jbyteArray j_pcm = env->NewByteArray(pcm_len);
+                        env->SetByteArrayRegion(j_pcm, 0, pcm_len, (jbyte*)(buf.data() + 5));
+                        env->CallVoidMethod(g_obj, g_onAudioData_method, j_pcm);
+                        env->DeleteLocalRef(j_pcm);
+                    }
+                    continue;
+                }
+
                 std::lock_guard<std::mutex> lock(send_mutex);
                 ikcp_input(g_kcp, (const char*)buf.data(), len);
             }
@@ -311,11 +332,11 @@ void network_loop(std::string ip) {
                         std::vector<uint8_t> nalu(payload + 5, payload + packet_len);
                         if (!nalu.empty()) {
                             std::lock_guard<std::mutex> lock(queue_mutex);
-                            // Drop queued frames if backlogged to prevent latency buildup on network jitter (12 frames = ~200ms at 60fps)
-                            if (decode_queue.size() > 12) {
-                                while (!decode_queue.empty()) decode_queue.pop();
-                                needs_recovery = true;
-                                send_idr_request();
+                            // Smart queue burst handling: on WAN retransmission bursts, do NOT nuke queue or freeze with needs_recovery!
+                            // Hardware decoder drains queued frames in 2-3ms and automatically drops intermediate rendered outputs.
+                            // Only if severely backlogged (>30 frames), trim older frames to newest without triggering a freeze.
+                            if (decode_queue.size() > 30) {
+                                while (decode_queue.size() > 5) decode_queue.pop();
                             }
                             decode_queue.push(std::move(nalu));
                             queue_cv.notify_one();
