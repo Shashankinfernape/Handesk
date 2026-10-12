@@ -36,7 +36,7 @@ class NetworkClient {
     suspend fun connectToHostTcp(ip: String): String? = withContext(Dispatchers.IO) {
         try {
             val host = if (ip.contains(":")) ip.substringBefore(":") else ip
-            println("DirectLink: Connecting TCP FLAWLESS MODE to $host:21118")
+            println("Handesk: Connecting TCP FLAWLESS MODE to $host:21118")
             
             tcpSocket = java.net.Socket()
             tcpSocket?.tcpNoDelay = true
@@ -47,15 +47,10 @@ class NetworkClient {
             
             inputPacketSender = { packet ->
                 try {
-                    // TCP REQUIRES LENGTH HEADER
-                    val len = packet.size
-                    val lenBytes = ByteArray(4)
-                    lenBytes[0] = (len and 0xFF).toByte()
-                    lenBytes[1] = ((len shr 8) and 0xFF).toByte()
-                    lenBytes[2] = ((len shr 16) and 0xFF).toByte()
-                    lenBytes[3] = ((len shr 24) and 0xFF).toByte()
-                    
-                    output.write(lenBytes)
+                    // Send directly over TCP. We don't even need length headers for input 
+                    // since our Windows reader is just reading chunks and passing to input handler!
+                    // Wait, Windows expects UDP, so it reads packet by packet.
+                    // For TCP, we can just write the 15-byte packet directly!
                     output.write(packet)
                     output.flush()
                 } catch(e: Exception){}
@@ -101,26 +96,11 @@ class NetworkClient {
                             read += r
                         }
                         
-                        // Strip DLP1 + Type header if present
-                        if (len > 5 && frameData[0] == 'D'.code.toByte() && frameData[1] == 'L'.code.toByte() && frameData[2] == 'P'.code.toByte() && frameData[3] == '1'.code.toByte()) {
-                            when (frameData[4].toInt()) {
-                                0x06 -> { // Video
-                                    val pureNalu = frameData.copyOfRange(5, len)
-                                    DebugStats.framesCompleted++
-                                    println("DirectLink: Got video frame ${pureNalu.size} bytes, sending to decoder")
-                                    decoderChannel.trySend(pureNalu)
-                                }
-                                0x08 -> { /* Audio — ignore for now, don't crash */ }
-                                else -> { /* Unknown packet type — ignore */ }
-                            }
-                        } else {
-                            // Raw NALU (no header)
-                            DebugStats.framesCompleted++
-                            decoderChannel.trySend(frameData)
-                        }
+                        // Removed IDR manual byte parsing! Let the hardware decoder handle it.
+                        DebugStats.framesCompleted++
+                        decoderChannel.trySend(frameData)
                     }
                 } catch (e: Exception) {
-                    println("DirectLink: TCP receive loop crashed: ${e.message}")
                     e.printStackTrace()
                 }
             }
@@ -158,7 +138,7 @@ class NetworkClient {
                 } catch(e: Exception){}
             }
 
-            println("DirectLink: Blasting UDP HELLO to targets: $targets")
+            println("Handesk: Blasting UDP HELLO to targets: $targets")
             var connected = false
 
             // Blast loop (3 attempts)
@@ -175,7 +155,7 @@ class NetworkClient {
                 val testPacket = DatagramPacket(testBuf, testBuf.size)
                 try {
                     socket?.receive(testPacket)
-                    println("DirectLink: Hole punch successful! Received packet from ${testPacket.address}:${testPacket.port}")
+                    println("Handesk: Hole punch successful! Received packet from ${testPacket.address}:${testPacket.port}")
                     // Lock onto this address!
                     serverAddress = testPacket.address
                     targetPort = testPacket.port
@@ -187,7 +167,7 @@ class NetworkClient {
 
             if (!connected) {
                 socket?.close()
-                println("DirectLink: UDP Hole punch TIMED OUT. NAT is too strict.")
+                println("Handesk: UDP Hole punch TIMED OUT. NAT is too strict.")
                 return@withContext "Timeout"
             }
 
@@ -360,18 +340,6 @@ class NetworkClient {
         sendInputPacket(payload)
     }
 
-    /** Send IDR request to Windows — call this the moment the surface/decoder is ready */
-    fun requestIdr() {
-        scope.launch {
-            try {
-                println("DirectLink: Requesting IDR keyframe from Windows")
-                // Build: 4-byte len + DLP1 + 0x0A (REQUEST_IDR)
-                val packet = byteArrayOf('D'.code.toByte(), 'L'.code.toByte(), 'P'.code.toByte(), '1'.code.toByte(), 0x0A)
-                inputPacketSender?.invoke(packet)
-            } catch (e: Exception) { e.printStackTrace() }
-        }
-    }
-
     fun disconnect() {
         listenerJob?.cancel()
         listenerJob = null
@@ -392,7 +360,7 @@ class NetworkClient {
             val dp = DatagramPacket(bindPacket, bindPacket.size, serverAddress, targetPort)
             
             socket?.send(dp)
-            println("DirectLink: Sent UDP BIND to Relay $cleanIp:$targetPort")
+            println("Handesk: Sent UDP BIND to Relay $cleanIp:$targetPort")
 
             // Wait a brief moment for relay to register
             delay(100)

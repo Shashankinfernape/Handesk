@@ -42,27 +42,27 @@ fn main() -> Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([800.0, 500.0])
             .with_min_inner_size([750.0, 450.0])
-            .with_title("DirectLink Desktop"),
+            .with_title("Handesk Desktop"),
         ..Default::default()
     };
 
     eframe::run_native(
-        "DirectLink",
+        "Handesk",
         options,
-        Box::new(|cc| Ok(Box::new(DirectLinkApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(HandeskApp::new(cc)))),
     )
     .map_err(|e| anyhow::anyhow!("Eframe error: {:?}", e))?;
 
     Ok(())
 }
 
-struct DirectLinkApp {
+struct HandeskApp {
     local_ip: String,
     remote_input: String,
     show_toast: bool,
 }
 
-impl DirectLinkApp {
+impl HandeskApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // Set dark theme
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
@@ -93,7 +93,7 @@ impl DirectLinkApp {
     }
 }
 
-impl eframe::App for DirectLinkApp {
+impl eframe::App for HandeskApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Top Panel for Banner/Menu
         egui::TopBottomPanel::top("top_panel")
@@ -103,7 +103,7 @@ impl eframe::App for DirectLinkApp {
                 ui.horizontal(|ui| {
                     ui.add_space(25.0);
                     ui.heading(
-                        egui::RichText::new("DirectLink Desktop")
+                        egui::RichText::new("Handesk Desktop")
                             .color(egui::Color32::from_rgb(239, 68, 57))
                             .size(24.0)
                             .strong(),
@@ -139,7 +139,7 @@ impl eframe::App for DirectLinkApp {
                             let (rect, _response) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
                             ui.painter().circle_filled(rect.center(), 6.0, egui::Color32::from_rgb(40, 200, 80));
                             ui.add_space(5.0);
-                            ui.label(egui::RichText::new("DirectLink Network: Ready").size(15.0));
+                            ui.label(egui::RichText::new("Handesk Network: Ready").size(15.0));
                         });
                         
                         ui.add_space(20.0);

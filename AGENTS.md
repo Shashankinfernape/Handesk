@@ -1,6 +1,6 @@
-# DirectLink Agent Strategy
+# Handesk Agent Strategy
 
-This document outlines the specialized autonomous agents utilized for building and maintaining the DirectLink project.
+This document outlines the specialized autonomous agents utilized for building and maintaining the Handesk project.
 
 ## Core Agents
 

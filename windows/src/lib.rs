@@ -15,6 +15,11 @@ mod transport;
 static RUNTIME: Mutex<Option<tokio::runtime::Runtime>> = Mutex::new(None);
 
 #[no_mangle]
+pub extern "C" fn start_handesk_backend() {
+    start_directlink_backend();
+}
+
+#[no_mangle]
 pub extern "C" fn start_directlink_backend() {
     init_logger();
     let mut rt_lock = RUNTIME.lock().unwrap();

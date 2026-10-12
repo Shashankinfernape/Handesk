@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "com.directlink.client"
     compileSdk = 34
+    ndkVersion = "27.0.12077973"
 
     defaultConfig {
         applicationId = "com.directlink.client"
@@ -13,6 +14,18 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildTypes {
@@ -52,4 +65,5 @@ dependencies {
     implementation("androidx.compose.animation:animation")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.bouncycastle:bcprov-jdk15to18:1.77")
+    implementation("io.github.jaredmdobson:concentus:1.0.2")
 }
