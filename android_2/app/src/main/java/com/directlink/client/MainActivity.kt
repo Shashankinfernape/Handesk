@@ -502,23 +502,25 @@ fun RemoteSessionScreen(
     LaunchedEffect(networkClient) {
         networkClient.onStatusUpdateListener = { newFps, newBitrate ->
             activity.runOnUiThread {
-                if (newFps in 15..144) {
-                    currentFps = newFps
-                }
-                val matchingQuality = when {
-                    newBitrate >= 40_000_000 -> "Source (Lossless)"
-                    newBitrate >= 20_000_000 -> "1440p HD"
-                    newBitrate >= 10_000_000 -> "1080p HD"
-                    newBitrate in 5_500_000..9_999_999 -> if (isTailscale) "1080p (WAN Max)" else "1080p HD"
-                    newBitrate in 4_000_000..5_499_999 -> if (isTailscale) "Auto (Balanced WAN)" else "720p"
-                    newBitrate in 3_000_000..3_999_999 -> if (isTailscale) "720p HD (WAN)" else "480p"
-                    newBitrate in 2_000_000..2_999_999 -> "480p"
-                    newBitrate in 1_200_000..1_999_999 -> "360p"
-                    newBitrate in 800_000..1_199_999 -> "240p"
-                    else -> "144p"
-                }
-                if (matchingQuality.isNotEmpty() && currentQuality != matchingQuality) {
-                    currentQuality = matchingQuality
+                if (currentQuality.startsWith("Auto")) {
+                    if (newFps in 15..144) {
+                        currentFps = newFps
+                    }
+                    val matchingQuality = when {
+                        newBitrate >= 40_000_000 -> "Source (Lossless)"
+                        newBitrate >= 20_000_000 -> "1440p HD"
+                        newBitrate >= 10_000_000 -> "1080p HD"
+                        newBitrate in 5_500_000..9_999_999 -> if (isTailscale) "1080p (WAN Max)" else "1080p HD"
+                        newBitrate in 4_000_000..5_499_999 -> if (isTailscale) "Auto (Balanced WAN)" else "720p"
+                        newBitrate in 3_000_000..3_999_999 -> if (isTailscale) "720p HD (WAN)" else "480p"
+                        newBitrate in 2_000_000..2_999_999 -> "480p"
+                        newBitrate in 1_200_000..1_999_999 -> "360p"
+                        newBitrate in 800_000..1_199_999 -> "240p"
+                        else -> "144p"
+                    }
+                    if (matchingQuality.isNotEmpty() && currentQuality != matchingQuality) {
+                        currentQuality = matchingQuality
+                    }
                 }
             }
         }
@@ -897,7 +899,8 @@ fun RemoteSessionScreen(
                                     onClick = {
                                         currentQuality = label
                                         currentFps = fps
-                                        networkClient.sendSettings(fps, bitrate)
+                                        val isAuto = label.startsWith("Auto")
+                                        networkClient.sendSettings(fps, bitrate, isAuto)
                                         expandedQualityMenu = false
                                         showToolbar = false
                                     }
@@ -935,7 +938,19 @@ fun RemoteSessionScreen(
                                     },
                                     onClick = {
                                         currentFps = fps
-                                        networkClient.sendFpsChange(fps)
+                                        val curBitrate = when (currentQuality) {
+                                            "Source (Lossless)" -> 50_000_000
+                                            "1440p HD" -> 25_000_000
+                                            "1080p HD" -> 12_000_000
+                                            "1080p (WAN Max)" -> 6_000_000
+                                            "Auto (Balanced WAN)" -> 4_500_000
+                                            "720p HD (WAN)" -> 4_000_000
+                                            "720p" -> 5_000_000
+                                            "480p (Smooth)", "480p" -> 2_500_000
+                                            "360p (Saver)", "360p" -> 1_500_000
+                                            else -> 4_500_000
+                                        }
+                                        networkClient.sendSettings(fps, curBitrate, isAuto = false)
                                         expandedFpsMenu = false
                                         showToolbar = false
                                     }

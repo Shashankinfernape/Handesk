@@ -151,9 +151,9 @@ class NativeClient {
     val isTailscale: Boolean
         get() = activeIp.startsWith("100.") || activeIp.contains("ts.net")
 
-    fun sendSettings(fps: Int, bitrate: Int) {
+    fun sendSettings(fps: Int, bitrate: Int, isAuto: Boolean = false) {
         if (isConnected) {
-            sendSettingsNative(fps, bitrate)
+            sendSettingsNative(fps, bitrate, isAuto)
         }
     }
 
@@ -168,5 +168,5 @@ class NativeClient {
     private external fun updateSurfaceNative(surface: Surface?)
     private external fun disconnectNative()
     private external fun sendInputNative(packet: ByteArray)
-    private external fun sendSettingsNative(fps: Int, bitrate: Int)
+    private external fun sendSettingsNative(fps: Int, bitrate: Int, isAuto: Boolean)
 }

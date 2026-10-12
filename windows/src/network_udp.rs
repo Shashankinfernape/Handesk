@@ -507,6 +507,12 @@ pub async fn start_udp_server() -> Result<()> {
                 if len >= 13 {
                     let fps = u32::from_le_bytes(buf[5..9].try_into().unwrap());
                     let bitrate = u32::from_le_bytes(buf[9..13].try_into().unwrap());
+                    let is_auto = if len >= 14 {
+                        buf[13] != 0
+                    } else {
+                        (bitrate == 4_500_000 && is_tailscale_ip(&remote_addr)) || (bitrate == 8_000_000 && !is_tailscale_ip(&remote_addr))
+                    };
+
                     if fps > 0 {
                         crate::capture::TARGET_FPS.store(fps, Ordering::Relaxed);
                     }
@@ -514,7 +520,12 @@ pub async fn start_udp_server() -> Result<()> {
                         crate::capture::CONFIGURED_BITRATE.store(bitrate, Ordering::Relaxed);
                         crate::capture::TARGET_BITRATE.store(bitrate, Ordering::Relaxed);
                     }
-                    info!("Client requested settings change: {} FPS, {} bps", fps, bitrate);
+                    crate::capture::AUTO_BITRATE_ENABLED.store(is_auto, Ordering::Relaxed);
+
+                    info!(
+                        "Client settings applied: {} FPS, {} bps | Auto Mode: {}",
+                        fps, bitrate, is_auto
+                    );
                     let cur_fps = crate::capture::TARGET_FPS.load(Ordering::Relaxed);
                     let cur_bitrate = crate::capture::TARGET_BITRATE.load(Ordering::Relaxed);
                     broadcast_settings(cur_fps, cur_bitrate);

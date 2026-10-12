@@ -61,6 +61,7 @@ pub extern "C" fn set_quality_settings(fps: u32, bitrate: u32) {
     capture::TARGET_FPS.store(fps, std::sync::atomic::Ordering::Relaxed);
     capture::CONFIGURED_BITRATE.store(bitrate, std::sync::atomic::Ordering::Relaxed);
     capture::TARGET_BITRATE.store(bitrate, std::sync::atomic::Ordering::Relaxed);
+    capture::AUTO_BITRATE_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
     network_udp::broadcast_settings(fps, bitrate);
 }
 

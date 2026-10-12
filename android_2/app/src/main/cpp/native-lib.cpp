@@ -495,14 +495,15 @@ Java_com_directlink_client_NativeClient_updateSurfaceNative(JNIEnv* env, jobject
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_directlink_client_NativeClient_sendSettingsNative(JNIEnv* env, jobject thiz, jint fps, jint bitrate) {
+Java_com_directlink_client_NativeClient_sendSettingsNative(JNIEnv* env, jobject thiz, jint fps, jint bitrate, jboolean is_auto) {
     if (udp_socket < 0 || !is_running) return;
-    uint8_t pkt[13];
+    uint8_t pkt[14];
     memcpy(pkt, "DLP1\x09", 5);
     uint32_t u_fps = (uint32_t)fps;
     uint32_t u_bitrate = (uint32_t)bitrate;
     memcpy(pkt + 5, &u_fps, 4);
     memcpy(pkt + 9, &u_bitrate, 4);
+    pkt[13] = is_auto ? 1 : 0;
     std::lock_guard<std::mutex> lock(send_mutex);
     sendto(udp_socket, (const char*)pkt, sizeof(pkt), 0, (struct sockaddr*)&target_addr_global, sizeof(target_addr_global));
 }
