@@ -315,24 +315,32 @@ pub async fn start_udp_server() -> Result<()> {
         }
     });
 
-    // 5. Dynamic Desktop Resolution change detection loop
+    // 5. Dynamic Desktop Resolution change detection & sync loop
     let socket_res = socket.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(300));
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
         let mut last_w = 0u32;
         let mut last_h = 0u32;
+        let mut ticks = 0u32;
         loop {
             interval.tick().await;
             let remote_addr = match *ACTIVE_CLIENT.read().unwrap() {
                 Some(addr) => addr,
-                None => continue,
+                None => {
+                    last_w = 0;
+                    last_h = 0;
+                    ticks = 0;
+                    continue;
+                }
             };
-            let w = crate::capture::DESKTOP_WIDTH.load(Ordering::Relaxed);
-            let h = crate::capture::DESKTOP_HEIGHT.load(Ordering::Relaxed);
-            if (w != last_w || h != last_h) && w > 0 && h > 0 {
+            ticks = ticks.wrapping_add(1);
+            let (w, h) = crate::capture::get_desktop_dimensions();
+            if (w != last_w || h != last_h || (ticks % 4 == 0)) && w > 0 && h > 0 {
+                if w != last_w || h != last_h {
+                    info!("Desktop resolution changed: {}x{} -> {}x{}", last_w, last_h, w, h);
+                }
                 last_w = w;
                 last_h = h;
-                info!("Sending Desktop Resolution update to client: {}x{}", w, h);
                 let mut res_pkt = Vec::with_capacity(13);
                 res_pkt.extend_from_slice(&MAGIC_BYTES);
                 res_pkt.push(PACKET_RESOLUTION);
@@ -427,8 +435,7 @@ pub async fn start_udp_server() -> Result<()> {
                 let _ = socket.send_to(&set_pkt, remote_addr).await;
 
                 // Send immediate Desktop Resolution handshake
-                let w = crate::capture::DESKTOP_WIDTH.load(Ordering::Relaxed);
-                let h = crate::capture::DESKTOP_HEIGHT.load(Ordering::Relaxed);
+                let (w, h) = crate::capture::get_desktop_dimensions();
                 if w > 0 && h > 0 {
                     let mut res_pkt = Vec::with_capacity(13);
                     res_pkt.extend_from_slice(&MAGIC_BYTES);
@@ -502,6 +509,15 @@ pub async fn start_udp_server() -> Result<()> {
             PACKET_REQUEST_IDR => {
                 crate::capture::FORCE_IDR.store(true, Ordering::Relaxed);
                 info!("Client requested IDR keyframe via UDP (0x0A)");
+                let (w, h) = crate::capture::get_desktop_dimensions();
+                if w > 0 && h > 0 {
+                    let mut res_pkt = Vec::with_capacity(13);
+                    res_pkt.extend_from_slice(&MAGIC_BYTES);
+                    res_pkt.push(PACKET_RESOLUTION);
+                    res_pkt.extend_from_slice(&w.to_le_bytes());
+                    res_pkt.extend_from_slice(&h.to_le_bytes());
+                    let _ = socket.send_to(&res_pkt, remote_addr).await;
+                }
             }
             PACKET_SETTINGS => {
                 if len >= 13 {

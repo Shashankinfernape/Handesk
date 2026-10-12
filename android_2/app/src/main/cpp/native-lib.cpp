@@ -29,6 +29,32 @@ jmethodID g_onAudioData_method = nullptr;
 jmethodID g_onStatusUpdate_method = nullptr;
 jmethodID g_onResolutionUpdate_method = nullptr;
 
+static int32_t g_last_notified_w = 0;
+static int32_t g_last_notified_h = 0;
+
+static void notify_resolution_change(int32_t w, int32_t h) {
+    if (w <= 0 || h <= 0 || !g_jvm || !g_obj || !g_onResolutionUpdate_method) return;
+    if (w == g_last_notified_w && h == g_last_notified_h) return;
+    g_last_notified_w = w;
+    g_last_notified_h = h;
+
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    jint getEnvStat = g_jvm->GetEnv((void**)&env, JNI_VERSION_1_6);
+    if (getEnvStat == JNI_EDETACHED) {
+        if (g_jvm->AttachCurrentThread(&env, nullptr) == 0) {
+            attached = true;
+        }
+    }
+    if (env) {
+        LOGI("Notifying Java of desktop resolution: %dx%d (Ratio: %.4f)", w, h, (float)w / (float)h);
+        env->CallVoidMethod(g_obj, g_onResolutionUpdate_method, (jint)w, (jint)h);
+    }
+    if (attached) {
+        g_jvm->DetachCurrentThread();
+    }
+}
+
 std::atomic<bool> is_running(false);
 std::thread network_thread;
 int udp_socket = -1;
@@ -194,8 +220,30 @@ void decode_nalu(const std::vector<uint8_t>& data) {
 
     AMediaCodecBufferInfo info;
     ssize_t out_idx = AMediaCodec_dequeueOutputBuffer(decoder, &info, 0);
-    while (out_idx >= 0) {
-        AMediaCodec_releaseOutputBuffer(decoder, out_idx, has_surface.load());
+    while (out_idx >= 0 || out_idx == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
+        if (out_idx == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
+            AMediaFormat* out_fmt = AMediaCodec_getOutputFormat(decoder);
+            if (out_fmt) {
+                int32_t w = 0, h = 0;
+                AMediaFormat_getInt32(out_fmt, AMEDIAFORMAT_KEY_WIDTH, &w);
+                AMediaFormat_getInt32(out_fmt, AMEDIAFORMAT_KEY_HEIGHT, &h);
+                int32_t crop_l = 0, crop_r = 0, crop_t = 0, crop_b = 0;
+                if (AMediaFormat_getInt32(out_fmt, "crop-left", &crop_l) &&
+                    AMediaFormat_getInt32(out_fmt, "crop-right", &crop_r) &&
+                    AMediaFormat_getInt32(out_fmt, "crop-top", &crop_t) &&
+                    AMediaFormat_getInt32(out_fmt, "crop-bottom", &crop_b)) {
+                    w = crop_r - crop_l + 1;
+                    h = crop_b - crop_t + 1;
+                }
+                AMediaFormat_delete(out_fmt);
+                if (w > 0 && h > 0) {
+                    LOGI("Hardware MediaCodec stream output format changed: %dx%d (Ratio: %.4f)", w, h, (float)w / (float)h);
+                    notify_resolution_change(w, h);
+                }
+            }
+        } else if (out_idx >= 0) {
+            AMediaCodec_releaseOutputBuffer(decoder, out_idx, has_surface.load());
+        }
         out_idx = AMediaCodec_dequeueOutputBuffer(decoder, &info, 0);
     }
 }
@@ -350,10 +398,8 @@ void network_loop(std::string ip) {
                     uint32_t w = 0, h = 0;
                     memcpy(&w, buf.data() + 5, 4);
                     memcpy(&h, buf.data() + 9, 4);
-                    LOGI("Handesk host desktop resolution update: %ux%u", w, h);
-                    if (attached && g_obj && g_onResolutionUpdate_method) {
-                        env->CallVoidMethod(g_obj, g_onResolutionUpdate_method, (jint)w, (jint)h);
-                    }
+                    LOGI("Handesk host desktop resolution packet: %ux%u", w, h);
+                    notify_resolution_change((int32_t)w, (int32_t)h);
                 }
             }
         }
@@ -461,6 +507,8 @@ Java_com_directlink_client_NativeClient_disconnectNative(JNIEnv* env, jobject th
         window = nullptr;
     }
     has_surface = false;
+    g_last_notified_w = 0;
+    g_last_notified_h = 0;
 }
 
 extern "C" JNIEXPORT void JNICALL

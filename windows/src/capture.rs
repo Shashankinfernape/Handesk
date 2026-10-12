@@ -16,7 +16,7 @@ use windows::Win32::Graphics::Dxgi::{
     IDXGIResource, DXGI_OUTDUPL_POINTER_SHAPE_INFO,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
-use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 use windows::Win32::Foundation::POINT;
 
 pub static TARGET_BITRATE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(12_000_000); // 12 Mbps default for 60fps clarity
@@ -24,11 +24,33 @@ pub static CONFIGURED_BITRATE: std::sync::atomic::AtomicU32 = std::sync::atomic:
 pub static AUTO_BITRATE_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static TARGET_FPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(60);
 pub static TARGET_GOP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(120);
-pub static DESKTOP_WIDTH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1920);
-pub static DESKTOP_HEIGHT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1080);
+pub static DESKTOP_WIDTH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub static DESKTOP_HEIGHT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 pub static FORCE_IDR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static IS_TAILSCALE_CLIENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static SHOW_CURSOR_ON_STREAM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn get_desktop_dimensions() -> (u32, u32) {
+    let mut w = DESKTOP_WIDTH.load(std::sync::atomic::Ordering::Relaxed);
+    let mut h = DESKTOP_HEIGHT.load(std::sync::atomic::Ordering::Relaxed);
+    if w == 0 || h == 0 {
+        unsafe {
+            let sm_w = GetSystemMetrics(SM_CXSCREEN) as u32;
+            let sm_h = GetSystemMetrics(SM_CYSCREEN) as u32;
+            if sm_w > 0 && sm_h > 0 {
+                DESKTOP_WIDTH.store(sm_w, std::sync::atomic::Ordering::Relaxed);
+                DESKTOP_HEIGHT.store(sm_h, std::sync::atomic::Ordering::Relaxed);
+                w = sm_w;
+                h = sm_h;
+            }
+        }
+    }
+    if w == 0 || h == 0 {
+        (1440, 900)
+    } else {
+        (w, h)
+    }
+}
 
 #[link(name = "user32")]
 extern "system" {

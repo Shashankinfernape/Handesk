@@ -526,19 +526,32 @@ fun RemoteSessionScreen(
         }
     }
     
-    // --- KEYBOARD & ORIENTATION STATE ---
+    val prefs = activity.getSharedPreferences("DirectLinkPrefs", Context.MODE_PRIVATE)
     var isKeyboardActive by remember { mutableStateOf(false) }
     var showSpecialKeys by remember { mutableStateOf(false) }
     var isKeyboardClosingPhase by remember { mutableStateOf(false) }
     var isLandscape by remember { mutableStateOf(true) }
-    var desktopAspectRatio by remember { mutableStateOf(16f / 9f) }
+    var desktopWidth by remember { mutableIntStateOf(prefs.getInt("last_desktop_w", 1440)) }
+    var desktopHeight by remember { mutableIntStateOf(prefs.getInt("last_desktop_h", 900)) }
+    var desktopAspectRatio by remember { mutableFloatStateOf(prefs.getFloat("last_aspect_ratio", 1440f / 900f)) }
+    var currentSurfaceView by remember { mutableStateOf<SurfaceView?>(null) }
 
     LaunchedEffect(networkClient) {
         networkClient.onResolutionUpdateListener = { width, height ->
-            if (width > 0 && height > 0) {
-                val ratio = width.toFloat() / height.toFloat()
-                android.util.Log.i("MainActivity", "Adopting Windows host aspect ratio: ${width}x${height} (ratio=$ratio)")
-                desktopAspectRatio = ratio
+            activity.runOnUiThread {
+                if (width > 0 && height > 0) {
+                    val ratio = width.toFloat() / height.toFloat()
+                    android.util.Log.i("MainActivity", "Adopting Windows host aspect ratio: ${width}x${height} (ratio=$ratio)")
+                    desktopWidth = width
+                    desktopHeight = height
+                    desktopAspectRatio = ratio
+                    prefs.edit()
+                        .putInt("last_desktop_w", width)
+                        .putInt("last_desktop_h", height)
+                        .putFloat("last_aspect_ratio", ratio)
+                        .apply()
+                    currentSurfaceView?.holder?.setFixedSize(width, height)
+                }
             }
         }
     }
@@ -655,7 +668,7 @@ fun RemoteSessionScreen(
 
     Column(modifier = Modifier.fillMaxSize().background(Color.Black).imePadding()) {
         
-        Box(modifier = Modifier
+        BoxWithConstraints(modifier = Modifier
             .weight(1f)
             .fillMaxWidth()
             .pointerInput(Unit) {
@@ -736,12 +749,24 @@ fun RemoteSessionScreen(
                 }
             }
         ) {
+            val containerWidth = maxWidth.value
+            val containerHeight = maxHeight.value
+            val containerAspect = if (containerHeight > 0f) containerWidth / containerHeight else 16f / 9f
+
+            // Dynamic Fit Mode: letterbox or pillarbox to keep PC's true aspect ratio
+            val fitModifier = if (containerAspect > desktopAspectRatio) {
+                Modifier
+                    .fillMaxHeight()
+                    .aspectRatio(desktopAspectRatio, matchHeightConstraintsFirst = true)
+            } else {
+                Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(desktopAspectRatio, matchHeightConstraintsFirst = false)
+            }
+
             // --- VIDEO SURFACE ---
             AndroidView(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .wrapContentSize(Alignment.Center)
-                    .aspectRatio(desktopAspectRatio, matchHeightConstraintsFirst = isLandscape)
+                modifier = fitModifier
                     .graphicsLayer {
                         scaleX = viewportScale.value
                         scaleY = viewportScale.value
@@ -751,6 +776,10 @@ fun RemoteSessionScreen(
                     },
                 factory = { ctx ->
                     val surface = SurfaceView(ctx)
+                    currentSurfaceView = surface
+                    if (desktopWidth > 0 && desktopHeight > 0) {
+                        surface.holder.setFixedSize(desktopWidth, desktopHeight)
+                    }
                     val touchHandler = DirectTouchHandler(networkClient, surface)
                     touchHandler.onTwoFingerSingleTap = {
                         activity.runOnUiThread {
@@ -780,6 +809,9 @@ fun RemoteSessionScreen(
                     surface.setOnTouchListener(touchHandler)
                     surface.holder.addCallback(object : SurfaceHolder.Callback {
                         override fun surfaceCreated(holder: SurfaceHolder) {
+                            if (desktopWidth > 0 && desktopHeight > 0) {
+                                holder.setFixedSize(desktopWidth, desktopHeight)
+                            }
                             if (!hasStartedNative) {
                                 networkClient.startNative(holder.surface)
                                 hasStartedNative = true
