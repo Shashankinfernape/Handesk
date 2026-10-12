@@ -28,6 +28,7 @@ pub static DESKTOP_WIDTH: std::sync::atomic::AtomicU32 = std::sync::atomic::Atom
 pub static DESKTOP_HEIGHT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1080);
 pub static FORCE_IDR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static IS_TAILSCALE_CLIENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static SHOW_CURSOR_ON_STREAM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[link(name = "user32")]
 extern "system" {
@@ -473,14 +474,14 @@ pub fn start_capture_loop() -> Result<()> {
             encoder.set_gop_size(current_gop);
         }
 
-        let rtt = crate::network_kcp::SMOOTHED_RTT_MS.load(std::sync::atomic::Ordering::Relaxed);
+        let rtt = crate::network_udp::SMOOTHED_RTT_MS.load(std::sync::atomic::Ordering::Relaxed);
         let is_tailscale = IS_TAILSCALE_CLIENT.load(std::sync::atomic::Ordering::Relaxed);
 
         // IDR recovery throttle:
         // LAN: ultra-fast 10ms throttle (zero artificial delay)
-        // Tailscale (100.x.x.x): 50ms..500ms scaled by RTT to prevent WAN congestion
+        // Tailscale (100.x.x.x): 250ms..800ms scaled by RTT to prevent WAN congestion storms
         let idr_throttle_ms = if is_tailscale {
-            (50u64).max(rtt as u64).min(500)
+            (250u64).max((rtt as u64) * 2).min(800)
         } else {
             10u64
         };
@@ -495,17 +496,18 @@ pub fn start_capture_loop() -> Result<()> {
             }
         }
 
-        // FPS pacing:
-        // LAN: unconstrained up to 144 FPS (match high refresh monitors)
-        // Tailscale (100.x.x.x): capped to 60 FPS max to eliminate WAN router queue backlog
+        // Precision FPS pacing (LAN supports 144 FPS, Tailscale 60 FPS)
         let max_fps = if is_tailscale { 60 } else { 144 };
         let fps = TARGET_FPS.load(std::sync::atomic::Ordering::Relaxed).clamp(15, max_fps) as u64;
         let frame_interval = Duration::from_micros(1_000_000 / fps);
         let elapsed = last_frame_time.elapsed();
         if elapsed < frame_interval {
             let remain = frame_interval - elapsed;
-            if remain > Duration::from_millis(1) {
-                std::thread::sleep(remain);
+            if remain > Duration::from_micros(2500) {
+                std::thread::sleep(remain - Duration::from_micros(1500));
+            }
+            while last_frame_time.elapsed() < frame_interval {
+                std::hint::spin_loop();
             }
         }
         last_frame_time = std::time::Instant::now();
@@ -523,57 +525,61 @@ pub fn start_capture_loop() -> Result<()> {
 
         match res {
             Ok(_) => {
-                // ── Cursor shape update from DXGI ───────────────────────────
-                if frame_info.PointerShapeBufferSize > 0 {
-                    let buf_size = frame_info.PointerShapeBufferSize as usize;
-                    cursor_shape_buf.resize(buf_size, 0u8);
-                    let mut required: u32 = 0;
-                    let mut shape_info = DXGI_OUTDUPL_POINTER_SHAPE_INFO::default();
-                    let shape_res = unsafe {
-                        duplication.GetFramePointerShape(
-                            buf_size as u32,
-                            cursor_shape_buf.as_mut_ptr() as *mut _,
-                            &mut required,
-                            &mut shape_info,
-                        )
-                    };
-                    if shape_res.is_ok() {
-                        let cw = shape_info.Width;
-                        let ch = if shape_info.Type == POINTER_SHAPE_TYPE_COLOR || shape_info.Type == POINTER_SHAPE_TYPE_MASKED_COLOR {
-                            shape_info.Height
-                        } else {
-                            shape_info.Height / 2 // Monochrome
-                        };
-                        let pixels = convert_cursor_to_bgra(
-                            &cursor_shape_buf[..buf_size],
-                            shape_info.Type,
-                            cw,
-                            ch,
-                            shape_info.Pitch,
-                        );
-                        cursor_shape = Some(CursorShape {
-                            pixels,
-                            width: cw,
-                            height: ch,
-                            hot_x: shape_info.HotSpot.x,
-                            hot_y: shape_info.HotSpot.y,
-                        });
-                    }
-                }
+                let show_cursor = SHOW_CURSOR_ON_STREAM.load(std::sync::atomic::Ordering::Relaxed);
 
-                // ── Cursor position update ──────────────────────────────────
-                if frame_info.PointerPosition.Visible.as_bool() {
-                    cursor_x = frame_info.PointerPosition.Position.x;
-                    cursor_y = frame_info.PointerPosition.Position.y;
-                    cursor_visible = true;
-                } else if frame_info.LastMouseUpdateTime != 0 {
-                    cursor_visible = false;
-                } else {
-                    // Fallback: poll live mouse position
-                    let mut pt = POINT::default();
-                    if unsafe { GetCursorPos(&mut pt).is_ok() } {
-                        cursor_x = pt.x;
-                        cursor_y = pt.y;
+                if show_cursor {
+                    // ── Cursor shape update from DXGI ───────────────────────────
+                    if frame_info.PointerShapeBufferSize > 0 {
+                        let buf_size = frame_info.PointerShapeBufferSize as usize;
+                        cursor_shape_buf.resize(buf_size, 0u8);
+                        let mut required: u32 = 0;
+                        let mut shape_info = DXGI_OUTDUPL_POINTER_SHAPE_INFO::default();
+                        let shape_res = unsafe {
+                            duplication.GetFramePointerShape(
+                                buf_size as u32,
+                                cursor_shape_buf.as_mut_ptr() as *mut _,
+                                &mut required,
+                                &mut shape_info,
+                            )
+                        };
+                        if shape_res.is_ok() {
+                            let cw = shape_info.Width;
+                            let ch = if shape_info.Type == POINTER_SHAPE_TYPE_COLOR || shape_info.Type == POINTER_SHAPE_TYPE_MASKED_COLOR {
+                                shape_info.Height
+                            } else {
+                                shape_info.Height / 2 // Monochrome
+                            };
+                            let pixels = convert_cursor_to_bgra(
+                                &cursor_shape_buf[..buf_size],
+                                shape_info.Type,
+                                cw,
+                                ch,
+                                shape_info.Pitch,
+                            );
+                            cursor_shape = Some(CursorShape {
+                                pixels,
+                                width: cw,
+                                height: ch,
+                                hot_x: shape_info.HotSpot.x,
+                                hot_y: shape_info.HotSpot.y,
+                            });
+                        }
+                    }
+
+                    // ── Cursor position update ──────────────────────────────────
+                    if frame_info.PointerPosition.Visible.as_bool() {
+                        cursor_x = frame_info.PointerPosition.Position.x;
+                        cursor_y = frame_info.PointerPosition.Position.y;
+                        cursor_visible = true;
+                    } else if frame_info.LastMouseUpdateTime != 0 {
+                        cursor_visible = false;
+                    } else {
+                        // Fallback: poll live mouse position
+                        let mut pt = POINT::default();
+                        if unsafe { GetCursorPos(&mut pt).is_ok() } {
+                            cursor_x = pt.x;
+                            cursor_y = pt.y;
+                        }
                     }
                 }
 
@@ -593,7 +599,7 @@ pub fn start_capture_loop() -> Result<()> {
                     }
 
                     // ── Blit cursor directly onto GPU frame texture ─────────
-                    if cursor_visible {
+                    if show_cursor && cursor_visible {
                         if let Some(ref shape) = cursor_shape {
                             blit_cursor_to_gpu_texture(
                                 &d3d_context,

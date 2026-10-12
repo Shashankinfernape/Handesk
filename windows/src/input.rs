@@ -73,10 +73,10 @@ pub fn handle_input_payload(payload: &[u8]) {
                         2 => 2_000_000,  // 360p
                         3 => 3_500_000,  // 480p
                         4 => 5_000_000,  // 720p
-                        5 => 8_000_000,  // 1080p
-                        6 => 14_000_000, // 1440p
-                        7 => 22_000_000, // Source (Lossless)
-                        _ => 8_000_000,
+                        5 => 15_000_000, // 1080p HD (15 Mbps crisp clarity)
+                        6 => 25_000_000, // 1440p HD (25 Mbps)
+                        7 => 50_000_000, // Source (Lossless 50 Mbps)
+                        _ => 15_000_000,
                     };
                     crate::capture::CONFIGURED_BITRATE
                         .store(new_bitrate, std::sync::atomic::Ordering::Relaxed);

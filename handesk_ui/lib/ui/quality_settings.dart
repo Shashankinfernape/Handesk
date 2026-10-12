@@ -10,9 +10,26 @@ class QualitySettingsWidget extends StatefulWidget {
 }
 
 class _QualitySettingsWidgetState extends State<QualitySettingsWidget> {
-  int _selectedFps = 90;
-  int _selectedBitrate = 15000000; // 1080p default
+  int _selectedFps = 60;
+  int _selectedBitrate = 12000000; // 1080p 60Hz default
   Timer? _timer;
+
+  static const List<int> _availableFps = [30, 45, 60, 90, 120, 144];
+  static const List<int> _availableBitrates = [
+    50000000,
+    25000000,
+    12000000,
+    6000000,
+    4800000,
+    4000000,
+    2500000,
+    1500000,
+    500000,
+  ];
+
+  int _findClosest(int val, List<int> list) {
+    return list.reduce((a, b) => (val - a).abs() < (val - b).abs() ? a : b);
+  }
 
   @override
   void initState() {
@@ -34,10 +51,12 @@ class _QualitySettingsWidgetState extends State<QualitySettingsWidget> {
       int hostFps = getCurrentFps();
       int hostBitrate = getCurrentBitrate();
       if (hostFps != 0 && hostBitrate != 0) {
-        if (hostFps != _selectedFps || hostBitrate != _selectedBitrate) {
+        int matchedFps = _findClosest(hostFps, _availableFps);
+        int matchedBitrate = _findClosest(hostBitrate, _availableBitrates);
+        if (matchedFps != _selectedFps || matchedBitrate != _selectedBitrate) {
           setState(() {
-            _selectedFps = hostFps;
-            _selectedBitrate = hostBitrate;
+            _selectedFps = matchedFps;
+            _selectedBitrate = matchedBitrate;
           });
         }
       }
@@ -86,6 +105,7 @@ class _QualitySettingsWidgetState extends State<QualitySettingsWidget> {
             underline: Container(height: 1, color: Colors.white24),
             items: const [
               DropdownMenuItem(value: 30, child: Text('30 FPS')),
+              DropdownMenuItem(value: 45, child: Text('45 FPS')),
               DropdownMenuItem(value: 60, child: Text('60 FPS')),
               DropdownMenuItem(value: 90, child: Text('90 FPS')),
               DropdownMenuItem(value: 120, child: Text('120 FPS')),
@@ -107,12 +127,12 @@ class _QualitySettingsWidgetState extends State<QualitySettingsWidget> {
             items: const [
               DropdownMenuItem(value: 50000000, child: Text('Source (50 Mbps)')),
               DropdownMenuItem(value: 25000000, child: Text('1440p (25 Mbps)')),
-              DropdownMenuItem(value: 15000000, child: Text('1080p (15 Mbps)')),
-              DropdownMenuItem(value: 10000000, child: Text('720p (10 Mbps)')),
-              DropdownMenuItem(value: 5000000, child: Text('480p (5 Mbps)')),
-              DropdownMenuItem(value: 3000000, child: Text('360p (3 Mbps)')),
-              DropdownMenuItem(value: 2000000, child: Text('Default (2 Mbps)')),
-              DropdownMenuItem(value: 1000000, child: Text('240p (1 Mbps)')),
+              DropdownMenuItem(value: 12000000, child: Text('1080p HD (12 Mbps)')),
+              DropdownMenuItem(value: 6000000, child: Text('1080p WAN (6 Mbps)')),
+              DropdownMenuItem(value: 4800000, child: Text('Tailscale Sweetspot (4.8M)')),
+              DropdownMenuItem(value: 4000000, child: Text('720p HD (4 Mbps)')),
+              DropdownMenuItem(value: 2500000, child: Text('480p (2.5 Mbps)')),
+              DropdownMenuItem(value: 1500000, child: Text('360p (1.5 Mbps)')),
               DropdownMenuItem(value: 500000, child: Text('144p (0.5 Mbps)')),
             ],
             onChanged: (val) {

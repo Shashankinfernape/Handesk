@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ffi';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -67,46 +68,122 @@ class _HomePageState extends State<HomePage> {
   bool isServiceRunning = true;
   String tailscaleIp = "Loading...";
   String lanIp = "Loading...";
+  Timer? _ipTimer;
 
   @override
   void initState() {
     super.initState();
     _fetchIps();
+    _ipTimer = Timer.periodic(const Duration(seconds: 4), (_) => _fetchIps());
+  }
+
+  @override
+  void dispose() {
+    _ipTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _fetchIps() async {
-    // 1. Fetch Tailscale IP
-    try {
-      final result = await Process.run('tailscale', ['ip', '-4']);
-      if (result.exitCode == 0) {
-        tailscaleIp = result.stdout.toString().trim();
-      } else {
-        tailscaleIp = "Not Connected";
-      }
-    } catch (e) {
-      tailscaleIp = "Tailscale Missing";
-    }
+    String newTsIp = "Not Connected";
+    String newLanIp = "Not Connected";
 
-    // 2. Fetch LAN IP
+    // 1. Fetch Tailscale IP (Checking CLI and PowerShell)
     try {
-      lanIp = "Not Connected";
-      final interfaces = await NetworkInterface.list(type: InternetAddressType.IPv4);
-      for (var interface in interfaces) {
-        if (interface.name.toLowerCase().contains('tailscale')) continue;
-        for (var addr in interface.addresses) {
-          if (addr.address.startsWith('100.')) continue;
-          if (addr.address.startsWith('127.')) continue;
-          
-          lanIp = addr.address;
-          break;
+      final candidates = [
+        'tailscale',
+        r'C:\Program Files\Tailscale\tailscale.exe',
+        r'C:\Program Files (x86)\Tailscale\tailscale.exe',
+      ];
+      for (final cmd in candidates) {
+        try {
+          final result = await Process.run(cmd, ['ip', '-4']);
+          if (result.exitCode == 0) {
+            final out = result.stdout.toString().trim();
+            if (out.startsWith('100.')) {
+              newTsIp = out;
+              break;
+            }
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    if (newTsIp == "Not Connected") {
+      try {
+        final result = await Process.run('powershell', [
+          '-NoProfile',
+          '-Command',
+          r"(Get-NetIPAddress -InterfaceAlias '*Tailscale*' -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress"
+        ]);
+        if (result.exitCode == 0) {
+          final out = result.stdout.toString().trim();
+          if (out.startsWith('100.')) {
+            newTsIp = out.split(RegExp(r'\r?\n')).first.trim();
+          }
         }
-        if (lanIp != "Not Connected") break;
-      }
-    } catch (e) {
-      lanIp = "Error finding LAN";
+      } catch (_) {}
     }
 
-    if (mounted) setState(() {});
+    // 2. Fetch LAN IP: Query active Windows default route interface via PowerShell
+    try {
+      final result = await Process.run('powershell', [
+        '-NoProfile',
+        '-Command',
+        r"Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { (Get-NetIPAddress -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress }"
+      ]);
+      if (result.exitCode == 0) {
+        final out = result.stdout.toString().trim();
+        final lines = out.split(RegExp(r'\r?\n'));
+        for (final line in lines) {
+          final ip = line.trim();
+          if (ip.isNotEmpty &&
+              !ip.startsWith('100.') &&
+              !ip.startsWith('127.') &&
+              !ip.startsWith('192.168.56.') &&
+              !ip.startsWith('192.168.137.') &&
+              !ip.startsWith('169.254.')) {
+            newLanIp = ip;
+            break;
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 3. Fallback: NetworkInterface.list with physical adapter prioritization
+    try {
+      final interfaces = await NetworkInterface.list(type: InternetAddressType.IPv4);
+      for (var iface in interfaces) {
+        final name = iface.name.toLowerCase();
+        for (var addr in iface.addresses) {
+          final ip = addr.address;
+          if (newTsIp == "Not Connected" && (name.contains('tailscale') || ip.startsWith('100.'))) {
+            newTsIp = ip;
+          }
+          if (newLanIp == "Not Connected") {
+            if (name.contains('wi-fi') ||
+                name.contains('wifi') ||
+                name.contains('wireless') ||
+                name.contains('wlan') ||
+                (name.contains('ethernet') && !name.contains('7'))) {
+              if (!ip.startsWith('100.') &&
+                  !ip.startsWith('127.') &&
+                  !ip.startsWith('192.168.56.') &&
+                  !ip.startsWith('192.168.137.') &&
+                  !ip.startsWith('169.254.')) {
+                newLanIp = ip;
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    if (mounted && (tailscaleIp != newTsIp || lanIp != newLanIp)) {
+      setState(() {
+        tailscaleIp = newTsIp;
+        lanIp = newLanIp;
+      });
+    }
   }
 
   void toggleService() {
