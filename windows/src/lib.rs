@@ -37,8 +37,8 @@ pub extern "C" fn start_directlink_backend() {
         .unwrap();
 
     rt.spawn(async {
-        info!("Starting DirectLink Host (KCP Mode)...");
-        if let Err(e) = network_kcp::start_kcp_server().await {
+        info!("Starting Handesk Host (Pure UDP Mode)...");
+        if let Err(e) = network_udp::start_udp_server().await {
             error!("Server crashed: {:?}", e);
         }
     });
