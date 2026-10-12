@@ -148,6 +148,15 @@ class NativeClient {
         sendInputPacket(payload)
     }
 
+    val isTailscale: Boolean
+        get() = activeIp.startsWith("100.") || activeIp.contains("ts.net")
+
+    fun sendSettings(fps: Int, bitrate: Int) {
+        if (isConnected) {
+            sendSettingsNative(fps, bitrate)
+        }
+    }
+
     fun togglePcMute() {
         // Send VK_VOLUME_MUTE (173) down and up
         sendKeyEvent(173, true)
@@ -159,4 +168,5 @@ class NativeClient {
     private external fun updateSurfaceNative(surface: Surface?)
     private external fun disconnectNative()
     private external fun sendInputNative(packet: ByteArray)
+    private external fun sendSettingsNative(fps: Int, bitrate: Int)
 }

@@ -37,6 +37,82 @@ pub fn is_tailscale_ip(addr: &SocketAddr) -> bool {
     }
 }
 
+pub fn detect_lan_ip() -> String {
+    // 1. Kernel UDP routing table probe: connect dummy socket to public DNS 8.8.8.8
+    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if socket.connect("8.8.8.8:80").is_ok() {
+            if let Ok(local_addr) = socket.local_addr() {
+                let ip = local_addr.ip();
+                if !ip.is_loopback() && !ip.is_unspecified() {
+                    let ip_str = ip.to_string();
+                    if !ip_str.starts_with("100.")
+                        && !ip_str.starts_with("192.168.56.")
+                        && !ip_str.starts_with("192.168.137.")
+                        && !ip_str.starts_with("169.254.") {
+                        return ip_str;
+                    }
+                }
+            }
+        }
+    }
+    // 2. Fallback probe to 1.1.1.1
+    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if socket.connect("1.1.1.1:80").is_ok() {
+            if let Ok(local_addr) = socket.local_addr() {
+                let ip = local_addr.ip();
+                if !ip.is_loopback() && !ip.is_unspecified() {
+                    let ip_str = ip.to_string();
+                    if !ip_str.starts_with("100.")
+                        && !ip_str.starts_with("192.168.56.")
+                        && !ip_str.starts_with("192.168.137.")
+                        && !ip_str.starts_with("169.254.") {
+                        return ip_str;
+                    }
+                }
+            }
+        }
+    }
+    "Not Connected".to_string()
+}
+
+pub fn detect_tailscale_ip() -> String {
+    let candidates = [
+        "tailscale",
+        "C:\\Program Files\\Tailscale\\tailscale.exe",
+        "C:\\Program Files (x86)\\Tailscale\\tailscale.exe",
+    ];
+    for cmd in candidates {
+        if let Ok(output) = std::process::Command::new(cmd).args(["ip", "-4"]).output() {
+            if output.status.success() {
+                let ip_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if ip_str.starts_with("100.") {
+                    return ip_str;
+                }
+            }
+        }
+    }
+    if let Ok(output) = std::process::Command::new("ipconfig").output() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut in_ts_block = false;
+        for line in text.lines() {
+            if line.contains("Tailscale") {
+                in_ts_block = true;
+            } else if line.contains("adapter ") && in_ts_block {
+                in_ts_block = false;
+            }
+            if in_ts_block && line.contains("IPv4 Address") {
+                if let Some(pos) = line.find(':') {
+                    let ip = line[pos + 1..].trim();
+                    if ip.starts_with("100.") {
+                        return ip.to_string();
+                    }
+                }
+            }
+        }
+    }
+    "Not Connected".to_string()
+}
+
 /// Zero-latency direct UDP transmission from the hardware encoder thread
 pub fn broadcast_video_frame(nalu: &[u8]) {
     let remote_addr = match *ACTIVE_CLIENT.read().unwrap() {
@@ -70,9 +146,10 @@ pub fn broadcast_video_frame(nalu: &[u8]) {
         let total_packet_len = 15 + chunk.len();
         let payload = &packet_buf[..total_packet_len];
 
-        // Micro-pacing: spreads multi-packet bursts evenly to avoid router buffer overflow
+        // Micro-pacing: spreads multi-packet bursts evenly to avoid router/tunnel buffer overflow
+        // 120µs on Tailscale flattens the 223 Mbps instantaneous burst to prevent WireGuard drops
         if total_chunks > 4 && chunk_index > 0 {
-            let pace_micros = if is_ts { 40 } else { 15 };
+            let pace_micros = if is_ts { 120 } else { 15 };
             let spin_start = Instant::now();
             while spin_start.elapsed().as_micros() < pace_micros {
                 std::hint::spin_loop();
@@ -100,6 +177,23 @@ pub fn broadcast_video_frame(nalu: &[u8]) {
     }
 }
 
+pub fn broadcast_settings(fps: u32, bitrate: u32) {
+    let remote_addr = match *ACTIVE_CLIENT.read().unwrap() {
+        Some(addr) => addr,
+        None => return,
+    };
+    let socket = match VIDEO_SOCKET.get() {
+        Some(s) => s,
+        None => return,
+    };
+    let mut pkt = [0u8; 13];
+    pkt[0..4].copy_from_slice(&MAGIC_BYTES);
+    pkt[4] = PACKET_SETTINGS;
+    pkt[5..9].copy_from_slice(&fps.to_le_bytes());
+    pkt[9..13].copy_from_slice(&bitrate.to_le_bytes());
+    let _ = socket.send_to(&pkt, remote_addr);
+}
+
 pub async fn start_udp_server() -> Result<()> {
     info!("========================================");
     info!(" Handesk Server Listening on UDP 21118");
@@ -116,6 +210,42 @@ pub async fn start_udp_server() -> Result<()> {
     let _ = socket2_sock.set_tos_v4(0xB8); // Expedited Forwarding QoS
 
     let std_socket: std::net::UdpSocket = socket2_sock.into();
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawSocket;
+        let raw_sock = std_socket.as_raw_socket() as usize;
+        let mut new_behavior: u32 = 0; // FALSE to disable WSAECONNRESET reporting on UDP
+        let mut bytes_returned: u32 = 0;
+        const SIO_UDP_CONNRESET: u32 = 0x9800000C;
+        extern "system" {
+            fn WSAIoctl(
+                s: usize,
+                dwIoControlCode: u32,
+                lpvInBuffer: *const std::ffi::c_void,
+                cbInBuffer: u32,
+                lpvOutBuffer: *mut std::ffi::c_void,
+                cbOutBuffer: u32,
+                lpcbBytesReturned: *mut u32,
+                lpOverlapped: *mut std::ffi::c_void,
+                lpCompletionRoutine: *mut std::ffi::c_void,
+            ) -> i32;
+        }
+        unsafe {
+            let _ = WSAIoctl(
+                raw_sock,
+                SIO_UDP_CONNRESET,
+                &new_behavior as *const _ as *const _,
+                std::mem::size_of::<u32>() as u32,
+                std::ptr::null_mut(),
+                0,
+                &mut bytes_returned,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+        }
+    }
+
     let video_sock = std_socket.try_clone()?;
     let _ = VIDEO_SOCKET.set(video_sock);
 
@@ -243,7 +373,12 @@ pub async fn start_udp_server() -> Result<()> {
         let (len, remote_addr) = match socket.recv_from(&mut buf).await {
             Ok(res) => res,
             Err(e) => {
+                if e.raw_os_error() == Some(10054) {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+                    continue;
+                }
                 error!("UDP recv error: {}", e);
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
                 continue;
             }
         };
@@ -260,14 +395,19 @@ pub async fn start_udp_server() -> Result<()> {
                 crate::capture::IS_TAILSCALE_CLIENT.store(is_ts, Ordering::Relaxed);
 
                 if is_ts {
-                    info!("Client {remote_addr} connected via TAILSCALE WAN - 1100 MTU, 60 FPS cap, 40µs micro-pacing");
+                    info!("Client {remote_addr} connected via TAILSCALE WAN - 1100 MTU, 60 FPS cap, 4.8 Mbps sweetspot, 120µs pacing");
                     crate::capture::TARGET_FPS.store(60, Ordering::Relaxed);
+                    crate::capture::CONFIGURED_BITRATE.store(4_800_000, Ordering::Relaxed);
+                    crate::capture::TARGET_BITRATE.store(4_800_000, Ordering::Relaxed);
+                    crate::capture::TARGET_GOP.store(90, Ordering::Relaxed);
+                    crate::capture::AUTO_BITRATE_ENABLED.store(true, Ordering::Relaxed);
                 } else {
-                    info!("Client {remote_addr} connected via LOCAL LAN - 1400 MTU, unconstrained 50+ Mbps, up to 144 FPS");
-                    let manual_bitrate = crate::capture::CONFIGURED_BITRATE.load(Ordering::Relaxed);
-                    crate::capture::TARGET_BITRATE.store(manual_bitrate.max(50_000_000), Ordering::Relaxed);
-                    crate::capture::TARGET_FPS.store(144, Ordering::Relaxed);
-                    crate::capture::TARGET_GOP.store(240, Ordering::Relaxed);
+                    info!("Client {remote_addr} connected via LOCAL LAN - 1400 MTU, initial 1080p 60Hz (12 Mbps), unconstrained capability");
+                    crate::capture::TARGET_FPS.store(60, Ordering::Relaxed);
+                    crate::capture::CONFIGURED_BITRATE.store(12_000_000, Ordering::Relaxed);
+                    crate::capture::TARGET_BITRATE.store(12_000_000, Ordering::Relaxed);
+                    crate::capture::TARGET_GOP.store(120, Ordering::Relaxed);
+                    crate::capture::AUTO_BITRATE_ENABLED.store(false, Ordering::Relaxed);
                 }
 
                 *ACTIVE_CLIENT.write().unwrap() = Some(remote_addr);
@@ -275,6 +415,16 @@ pub async fn start_udp_server() -> Result<()> {
 
                 // Echo HELLO handshake back to client
                 let _ = socket.send_to(&buf[0..len], remote_addr).await;
+
+                // Send immediate Quality & FPS settings handshake so Android client UI syncs 1:1
+                let cur_fps = crate::capture::TARGET_FPS.load(Ordering::Relaxed);
+                let cur_bitrate = crate::capture::TARGET_BITRATE.load(Ordering::Relaxed);
+                let mut set_pkt = [0u8; 13];
+                set_pkt[0..4].copy_from_slice(&MAGIC_BYTES);
+                set_pkt[4] = PACKET_SETTINGS;
+                set_pkt[5..9].copy_from_slice(&cur_fps.to_le_bytes());
+                set_pkt[9..13].copy_from_slice(&cur_bitrate.to_le_bytes());
+                let _ = socket.send_to(&set_pkt, remote_addr).await;
 
                 // Send immediate Desktop Resolution handshake
                 let w = crate::capture::DESKTOP_WIDTH.load(Ordering::Relaxed);
@@ -317,25 +467,20 @@ pub async fn start_udp_server() -> Result<()> {
 
                         let is_ts = is_tailscale_ip(&remote_addr);
                         if is_ts {
-                            if old_rtt > 15 && rtt_ms > old_rtt * 3 {
-                                info!("Tailscale path switch detected (RTT: {}ms -> {}ms), triggering IDR", old_rtt, rtt_ms);
-                                crate::capture::FORCE_IDR.store(true, Ordering::Relaxed);
-                            }
-
                             let auto_enabled = crate::capture::AUTO_BITRATE_ENABLED.load(Ordering::Relaxed);
                             if auto_enabled {
-                                let (mut adaptive_bitrate, adaptive_fps, gop_frames) = if new_smoothed < 40 {
-                                    (12_000_000, 60, 180)
-                                } else if new_smoothed < 80 {
-                                    (8_000_000, 60, 120)
+                                let (mut adaptive_bitrate, adaptive_fps, gop_frames) = if new_smoothed < 35 {
+                                    (6_500_000, 60, 120)
+                                } else if new_smoothed < 75 {
+                                    (4_800_000, 60, 90)
                                 } else if new_smoothed < 130 {
-                                    (4_500_000, 30, 90)
+                                    (3_600_000, 45, 90)
                                 } else {
-                                    (2_500_000, 30, 60)
+                                    (2_400_000, 30, 60)
                                 };
 
                                 if client_rx_bps > 0 && client_rx_bps < (adaptive_bitrate as u64) * 8 / 10 {
-                                    adaptive_bitrate = ((client_rx_bps * 9 / 10) as u32).clamp(1_500_000, 12_000_000);
+                                    adaptive_bitrate = ((client_rx_bps * 9 / 10) as u32).clamp(1_800_000, 7_500_000);
                                 }
 
                                 crate::capture::TARGET_BITRATE.store(adaptive_bitrate, Ordering::Relaxed);
@@ -348,6 +493,11 @@ pub async fn start_udp_server() -> Result<()> {
             }
             PACKET_INPUT => {
                 crate::input::handle_input_payload(&buf[5..len]);
+                if len >= 7 && (buf[5] == 0x10 || buf[5] == 0x11) {
+                    let cur_fps = crate::capture::TARGET_FPS.load(Ordering::Relaxed);
+                    let cur_bitrate = crate::capture::TARGET_BITRATE.load(Ordering::Relaxed);
+                    broadcast_settings(cur_fps, cur_bitrate);
+                }
             }
             PACKET_REQUEST_IDR => {
                 crate::capture::FORCE_IDR.store(true, Ordering::Relaxed);
@@ -357,10 +507,17 @@ pub async fn start_udp_server() -> Result<()> {
                 if len >= 13 {
                     let fps = u32::from_le_bytes(buf[5..9].try_into().unwrap());
                     let bitrate = u32::from_le_bytes(buf[9..13].try_into().unwrap());
-                    crate::capture::TARGET_FPS.store(fps, Ordering::Relaxed);
-                    crate::capture::CONFIGURED_BITRATE.store(bitrate, Ordering::Relaxed);
-                    crate::capture::TARGET_BITRATE.store(bitrate, Ordering::Relaxed);
+                    if fps > 0 {
+                        crate::capture::TARGET_FPS.store(fps, Ordering::Relaxed);
+                    }
+                    if bitrate > 0 {
+                        crate::capture::CONFIGURED_BITRATE.store(bitrate, Ordering::Relaxed);
+                        crate::capture::TARGET_BITRATE.store(bitrate, Ordering::Relaxed);
+                    }
                     info!("Client requested settings change: {} FPS, {} bps", fps, bitrate);
+                    let cur_fps = crate::capture::TARGET_FPS.load(Ordering::Relaxed);
+                    let cur_bitrate = crate::capture::TARGET_BITRATE.load(Ordering::Relaxed);
+                    broadcast_settings(cur_fps, cur_bitrate);
                 }
             }
             _ => {}

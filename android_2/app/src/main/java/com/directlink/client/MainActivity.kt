@@ -313,7 +313,26 @@ fun HomeTab(networkClient: NativeClient, activity: Activity, onConnected: () -> 
                     }
                 )
                 
-                Spacer(modifier = Modifier.height(20.dp))
+                if (hostIp.isNotBlank()) {
+                    val isTs = hostIp.trim().startsWith("100.") || hostIp.trim().contains("ts.net")
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (isTs) Color(0xFF00E5FF).copy(alpha = 0.15f) else Color(0xFF00E676).copy(alpha = 0.15f))
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = if (isTs) "⚡ TAILSCALE WAN DETECTED" else "⚡ LOCAL LAN DETECTED",
+                                color = if (isTs) Color(0xFF00E5FF) else Color(0xFF00E676),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(16.dp))
                 
                 Button(
                     onClick = {
@@ -467,12 +486,13 @@ fun RemoteSessionScreen(
     activity: Activity,
     onDisconnect: () -> Unit
 ) {
+    val isTailscale = networkClient.isTailscale
     var showToolbar by remember { mutableStateOf(false) }
     var expandedQualityMenu by remember { mutableStateOf(false) }
-    var currentQuality by remember { mutableStateOf("1080p HD") }
-    var isAutoMode by remember { mutableStateOf(false) }
+    var currentQuality by remember { mutableStateOf(if (isTailscale) "Auto (Balanced WAN)" else "1080p HD") }
+    var isAutoMode by remember { mutableStateOf(isTailscale) }
     var expandedFpsMenu by remember { mutableStateOf(false) }
-    var currentFps by remember { mutableStateOf(90) }
+    var currentFps by remember { mutableIntStateOf(60) }
     var isPcAudioMuted by remember { mutableStateOf(false) }
     
     val focusRequester = remember { FocusRequester() }
@@ -480,24 +500,22 @@ fun RemoteSessionScreen(
     val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
 
     LaunchedEffect(networkClient) {
-        // Enforce 1080p HD (15 Mbps) default quality on stream start
-        networkClient.sendQualityChange(5)
-
         networkClient.onStatusUpdateListener = { newFps, newBitrate ->
-            if (currentFps != newFps) {
-                currentFps = newFps
-            }
-            if (isAutoMode) {
-                val matchingQuality = when (newBitrate) {
-                    500_000 -> "144p"
-                    1_000_000 -> "240p"
-                    2_000_000 -> "360p"
-                    3_500_000 -> "480p"
-                    5_000_000 -> "720p"
-                    7_000_000, 8_000_000 -> "1080p HD"
-                    14_000_000 -> "1440p HD"
-                    22_000_000 -> "Source (Lossless)"
-                    else -> ""
+            activity.runOnUiThread {
+                if (newFps in 15..144) {
+                    currentFps = newFps
+                }
+                val matchingQuality = when {
+                    newBitrate >= 40_000_000 -> "Source (Lossless)"
+                    newBitrate >= 20_000_000 -> "1440p HD"
+                    newBitrate >= 10_000_000 -> "1080p HD"
+                    newBitrate in 5_500_000..9_999_999 -> if (isTailscale) "1080p (WAN Max)" else "1080p HD"
+                    newBitrate in 4_000_000..5_499_999 -> if (isTailscale) "Auto (Balanced WAN)" else "720p"
+                    newBitrate in 3_000_000..3_999_999 -> if (isTailscale) "720p HD (WAN)" else "480p"
+                    newBitrate in 2_000_000..2_999_999 -> "480p"
+                    newBitrate in 1_200_000..1_999_999 -> "360p"
+                    newBitrate in 800_000..1_199_999 -> "240p"
+                    else -> "144p"
                 }
                 if (matchingQuality.isNotEmpty() && currentQuality != matchingQuality) {
                     currentQuality = matchingQuality
@@ -824,6 +842,14 @@ fun RemoteSessionScreen(
                         }
                     )
                     
+                    // Network Mode Badge
+                    ToolbarIconButton(
+                        icon = Icons.Filled.Share,
+                        label = if (isTailscale) "WAN" else "LAN",
+                        tint = if (isTailscale) Color(0xFF00E5FF) else Color(0xFF00E676),
+                        onClick = { }
+                    )
+
                     // Display Quality
                     Box {
                         ToolbarIconButton(
@@ -835,20 +861,27 @@ fun RemoteSessionScreen(
                         DropdownMenu(
                             expanded = expandedQualityMenu,
                             onDismissRequest = { expandedQualityMenu = false },
-                            modifier = Modifier.background(SurfaceDark).width(200.dp)
+                            modifier = Modifier.background(SurfaceDark).width(220.dp)
                         ) {
-                            val options = listOf(
-                                "Source (Lossless)" to 7,
-                                "1440p HD" to 6,
-                                "1080p HD" to 5,
-                                "720p" to 4,
-                                "480p" to 3,
-                                "360p" to 2,
-                                "240p" to 1,
-                                "144p" to 0,
-                                "Auto" to 8
-                            )
-                            options.forEach { (label, level) ->
+                            val options = if (isTailscale) {
+                                listOf(
+                                    Triple("Auto (Balanced WAN)", 60, 4_500_000),
+                                    Triple("1080p (WAN Max)", 60, 6_000_000),
+                                    Triple("720p HD (WAN)", 60, 4_000_000),
+                                    Triple("480p (Smooth)", 45, 2_500_000),
+                                    Triple("360p (Saver)", 30, 1_500_000)
+                                )
+                            } else {
+                                listOf(
+                                    Triple("Source (Lossless)", 144, 50_000_000),
+                                    Triple("1440p HD", 120, 25_000_000),
+                                    Triple("1080p HD", 60, 12_000_000),
+                                    Triple("720p", 60, 5_000_000),
+                                    Triple("480p", 60, 3_500_000),
+                                    Triple("Auto (Adaptive)", 60, 8_000_000)
+                                )
+                            }
+                            options.forEach { (label, fps, bitrate) ->
                                 DropdownMenuItem(
                                     text = { 
                                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -863,8 +896,8 @@ fun RemoteSessionScreen(
                                     },
                                     onClick = {
                                         currentQuality = label
-                                        isAutoMode = (level == 8)
-                                        networkClient.sendQualityChange(level)
+                                        currentFps = fps
+                                        networkClient.sendSettings(fps, bitrate)
                                         expandedQualityMenu = false
                                         showToolbar = false
                                     }
@@ -886,9 +919,10 @@ fun RemoteSessionScreen(
                             onDismissRequest = { expandedFpsMenu = false },
                             modifier = Modifier.background(SurfaceDark).width(160.dp)
                         ) {
-                            listOf(144, 120, 90, 60, 30).forEach { fps ->
+                            val fpsOptions = if (isTailscale) listOf(60, 45, 30) else listOf(144, 120, 90, 60, 30)
+                            fpsOptions.forEach { fps ->
                                 DropdownMenuItem(
-                                    text = {
+                                    text = { 
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             if (currentFps == fps) {
                                                 Icon(Icons.Filled.Check, contentDescription = null, tint = BrandBlue, modifier = Modifier.size(18.dp))

@@ -35,11 +35,14 @@ int udp_socket = -1;
 struct sockaddr_in target_addr_global;
 std::mutex send_mutex;
 
-// Rate-limited keyframe request: at most one every 150ms over direct UDP
+std::atomic<bool> g_is_tailscale{false};
+
+// Rate-limited keyframe request: 250ms on Tailscale WAN to avoid congestion collapse, 100ms on LAN
 static void send_idr_request() {
     static std::chrono::steady_clock::time_point last_req;
     auto now = std::chrono::steady_clock::now();
-    if (now - last_req < std::chrono::milliseconds(150)) return;
+    int min_interval = g_is_tailscale.load() ? 250 : 100;
+    if (now - last_req < std::chrono::milliseconds(min_interval)) return;
     last_req = now;
     if (udp_socket < 0) return;
 
@@ -51,23 +54,80 @@ static void send_idr_request() {
 AMediaCodec* decoder = nullptr;
 ANativeWindow* window = nullptr;
 bool has_received_idr = false;
+std::atomic<bool> needs_recovery{false};
 
-struct FrameReassembler {
-    uint32_t current_seq = 0;
+std::mutex queue_mutex;
+std::condition_variable queue_cv;
+std::queue<std::vector<uint8_t>> decode_queue;
+std::thread decode_thread;
+
+struct FrameSlot {
+    uint32_t seq = 0;
     uint16_t total_chunks = 0;
     uint16_t received_chunks = 0;
     size_t total_bytes = 0;
     std::vector<std::vector<uint8_t>> chunks;
-    bool has_started = false;
+    bool in_use = false;
+};
 
-    void reset(uint32_t seq, uint16_t total) {
-        current_seq = seq;
-        total_chunks = total;
-        received_chunks = 0;
-        total_bytes = 0;
-        chunks.clear();
-        chunks.resize(total);
-        has_started = true;
+struct MultiFrameReassembler {
+    static const int NUM_SLOTS = 16;
+    FrameSlot slots[NUM_SLOTS];
+    uint32_t highest_completed_seq = 0;
+
+    void on_chunk(uint32_t seq, uint16_t chunk_idx, uint16_t total_chunks, uint16_t chunk_len, const uint8_t* payload) {
+        if (seq <= highest_completed_seq && highest_completed_seq > 0) {
+            return;
+        }
+
+        int idx = seq % NUM_SLOTS;
+        FrameSlot& slot = slots[idx];
+
+        if (!slot.in_use || slot.seq != seq) {
+            if (slot.in_use && slot.received_chunks < slot.total_chunks) {
+                // Incomplete frame was overwritten: a reference frame was dropped!
+                // Signal immediate recovery so subsequent P-frames aren't decoded into ghosted artifacts!
+                needs_recovery.store(true);
+                send_idr_request();
+            }
+            slot.seq = seq;
+            slot.total_chunks = total_chunks;
+            slot.received_chunks = 0;
+            slot.total_bytes = 0;
+            slot.chunks.assign(total_chunks, std::vector<uint8_t>());
+            slot.in_use = true;
+        }
+
+        if (chunk_idx < slot.total_chunks && slot.chunks[chunk_idx].empty()) {
+            slot.chunks[chunk_idx].assign(payload, payload + chunk_len);
+            slot.received_chunks++;
+            slot.total_bytes += chunk_len;
+
+            if (slot.received_chunks == slot.total_chunks) {
+                // Check if an intermediate frame was dropped between highest_completed_seq and seq
+                if (highest_completed_seq > 0 && seq > highest_completed_seq + 1) {
+                    // Frame gap detected: intermediate reference frame missing!
+                    needs_recovery.store(true);
+                    send_idr_request();
+                }
+
+                std::vector<uint8_t> complete_frame;
+                complete_frame.reserve(slot.total_bytes);
+                for (const auto& c : slot.chunks) {
+                    complete_frame.insert(complete_frame.end(), c.begin(), c.end());
+                }
+
+                highest_completed_seq = seq;
+                slot.in_use = false;
+
+                std::lock_guard<std::mutex> lock(queue_mutex);
+                if (decode_queue.size() > 30) {
+                    while (decode_queue.size() > 5) decode_queue.pop();
+                }
+                decode_queue.push(std::move(complete_frame));
+                queue_cv.notify_one();
+            }
+        }
     }
 };
 
@@ -79,8 +139,6 @@ long long current_time_ms() {
     clock_gettime(CLOCK_MONOTONIC, &res);
     return (long long)res.tv_sec * 1000 + res.tv_nsec / 1000000;
 }
-
-std::atomic<bool> needs_recovery{false};
 
 void decode_nalu(const std::vector<uint8_t>& data) {
     std::lock_guard<std::mutex> lock(decoder_mutex);
@@ -136,26 +194,11 @@ void decode_nalu(const std::vector<uint8_t>& data) {
 
     AMediaCodecBufferInfo info;
     ssize_t out_idx = AMediaCodec_dequeueOutputBuffer(decoder, &info, 0);
-    ssize_t last_out_idx = -1;
-    
-    // Drain all decoded frames, rendering only the newest to eliminate latency
     while (out_idx >= 0) {
-        if (last_out_idx >= 0) {
-            AMediaCodec_releaseOutputBuffer(decoder, last_out_idx, false);
-        }
-        last_out_idx = out_idx;
+        AMediaCodec_releaseOutputBuffer(decoder, out_idx, has_surface.load());
         out_idx = AMediaCodec_dequeueOutputBuffer(decoder, &info, 0);
     }
-    
-    if (last_out_idx >= 0) {
-        AMediaCodec_releaseOutputBuffer(decoder, last_out_idx, has_surface.load());
-    }
 }
-
-std::mutex queue_mutex;
-std::condition_variable queue_cv;
-std::queue<std::vector<uint8_t>> decode_queue;
-std::thread decode_thread;
 
 void decode_worker_loop() {
     while (is_running) {
@@ -217,6 +260,7 @@ void network_loop(std::string ip) {
     }
 
     bool is_tailscale = (host.rfind("100.", 0) == 0);
+    g_is_tailscale.store(is_tailscale);
     LOGI("[HANDESK UDP] Connecting to %s (%s) - Pure High-Performance UDP Engine",
          is_tailscale ? "TAILSCALE WAN" : "LOCAL LAN", host.c_str());
 
@@ -226,7 +270,7 @@ void network_loop(std::string ip) {
     send_idr_request();
 
     std::vector<uint8_t> buf(65536);
-    FrameReassembler reassembler;
+    MultiFrameReassembler reassembler;
     uint32_t rx_bytes_accum = 0;
     uint32_t rx_bytes_sec = 0;
     auto last_rate_calc = std::chrono::steady_clock::now();
@@ -250,7 +294,7 @@ void network_loop(std::string ip) {
                 connection_confirmed = true;
                 uint8_t type = buf[4];
 
-                // ── 0x06: VIDEO Chunk (Zero-Wait Frame Reassembly) ───────────
+                // ── 0x06: VIDEO Chunk (Multi-Frame Jitter-Immune Reassembly) ─
                 if (type == 0x06 && len >= 15) {
                     uint32_t seq = 0;
                     uint16_t chunk_idx = 0;
@@ -262,45 +306,7 @@ void network_loop(std::string ip) {
                     memcpy(&chunk_len, buf.data() + 13, 2);
 
                     if (len >= 15 + chunk_len && chunk_idx < total_chunks && total_chunks > 0) {
-                        if (!reassembler.has_started) {
-                            reassembler.reset(seq, total_chunks);
-                        } else if (seq > reassembler.current_seq) {
-                            // Newer frame arrived!
-                            // If previous frame was incomplete, discard it immediately.
-                            // Zero waiting for stale retransmissions! Request instant IDR.
-                            if (reassembler.received_chunks < reassembler.total_chunks) {
-                                send_idr_request();
-                            }
-                            reassembler.reset(seq, total_chunks);
-                        } else if (seq < reassembler.current_seq) {
-                            // Obsolete out-of-order packet on WAN - discard!
-                            continue;
-                        }
-
-                        // Store chunk in preallocated vector slot
-                        if (chunk_idx < reassembler.chunks.size() && reassembler.chunks[chunk_idx].empty()) {
-                            reassembler.chunks[chunk_idx].assign(buf.data() + 15, buf.data() + 15 + chunk_len);
-                            reassembler.received_chunks++;
-                            reassembler.total_bytes += chunk_len;
-
-                            // Once all chunks arrive, assemble contiguous NALU
-                            if (reassembler.received_chunks == reassembler.total_chunks) {
-                                std::vector<uint8_t> complete_frame;
-                                complete_frame.reserve(reassembler.total_bytes);
-                                for (auto& c : reassembler.chunks) {
-                                    complete_frame.insert(complete_frame.end(), c.begin(), c.end());
-                                }
-
-                                {
-                                    std::lock_guard<std::mutex> lock(queue_mutex);
-                                    if (decode_queue.size() > 30) {
-                                        while (decode_queue.size() > 5) decode_queue.pop();
-                                    }
-                                    decode_queue.push(std::move(complete_frame));
-                                    queue_cv.notify_one();
-                                }
-                            }
-                        }
+                        reassembler.on_chunk(seq, chunk_idx, total_chunks, chunk_len, buf.data() + 15);
                     }
                 }
                 // ── 0x08: AUDIO Direct Datagram ──────────────────────────────
@@ -317,6 +323,17 @@ void network_loop(std::string ip) {
                 else if (type == 0x01) {
                     LOGI("Handesk server confirmed HELLO handshake");
                     send_idr_request();
+                }
+                // ── 0x09: Settings / Status Packet from Host ─────────────────
+                else if (type == 0x09 && len >= 13) {
+                    uint32_t fps = 0;
+                    uint32_t bitrate = 0;
+                    memcpy(&fps, buf.data() + 5, 4);
+                    memcpy(&bitrate, buf.data() + 9, 4);
+                    LOGI("Handesk host status update: %u FPS, %u bps", fps, bitrate);
+                    if (attached && g_obj && g_onStatusUpdate_method) {
+                        env->CallVoidMethod(g_obj, g_onStatusUpdate_method, (jint)fps, (jint)bitrate);
+                    }
                 }
                 // ── 0x0B / 0x02: PING (Echo PONG with telemetry) ────────────
                 else if ((type == 0x0B || type == 0x02) && len >= 13) {
@@ -476,3 +493,17 @@ Java_com_directlink_client_NativeClient_updateSurfaceNative(JNIEnv* env, jobject
         }
     }
 }
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_directlink_client_NativeClient_sendSettingsNative(JNIEnv* env, jobject thiz, jint fps, jint bitrate) {
+    if (udp_socket < 0 || !is_running) return;
+    uint8_t pkt[13];
+    memcpy(pkt, "DLP1\x09", 5);
+    uint32_t u_fps = (uint32_t)fps;
+    uint32_t u_bitrate = (uint32_t)bitrate;
+    memcpy(pkt + 5, &u_fps, 4);
+    memcpy(pkt + 9, &u_bitrate, 4);
+    std::lock_guard<std::mutex> lock(send_mutex);
+    sendto(udp_socket, (const char*)pkt, sizeof(pkt), 0, (struct sockaddr*)&target_addr_global, sizeof(target_addr_global));
+}
+
