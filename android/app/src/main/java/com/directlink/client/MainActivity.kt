@@ -639,6 +639,7 @@ fun RemoteSessionScreen(
             )
         )
     }
+    var lastSentText by remember { mutableStateOf("") }
     var lastKeyEventBackspaceTime by remember { mutableLongStateOf(0L) }
     
     val viewportScale = remember { androidx.compose.animation.core.Animatable(1f) }
@@ -656,6 +657,7 @@ fun RemoteSessionScreen(
             isKeyboardActive = false
             showSpecialKeys = false
             userDismissedKeyboard = true
+            lastSentText = ""
             focusManager.clearFocus()
             keyboardController?.hide()
             val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
@@ -663,6 +665,7 @@ fun RemoteSessionScreen(
             releaseAllRemoteKeys()
         } else {
             userDismissedKeyboard = false
+            lastSentText = ""
             textFieldState = TextFieldValue(
                 text = PHANTOM_KEYBOARD_BUFFER,
                 selection = TextRange(PHANTOM_KEYBOARD_BUFFER.length)
@@ -697,63 +700,115 @@ fun RemoteSessionScreen(
         onDisconnect()
     }
 
-    // --- HIDDEN KEYBOARD INJECTOR WITH PHANTOM BUFFER (100% RELIABLE BACKSPACE & NATIVE ENTER) ---
+    // --- HIDDEN KEYBOARD INJECTOR (ACTIVE AUTO-SUGGESTIONS + RELIABLE BACKSPACE + ENTER) ---
     BasicTextField(
         value = textFieldState,
         onValueChange = { newVal ->
             if (!isKeyboardActive) return@BasicTextField
-            
-            val oldLen = textFieldState.text.length
-            val newLen = newVal.text.length
 
-            if (newLen < oldLen) {
-                // Backspace detected via string shrinkage!
+            val currentFullText = newVal.text
+
+            // 1. Backspace when buffer is below phantom threshold (empty buffer deletion)
+            if (currentFullText.length < PHANTOM_KEYBOARD_BUFFER.length) {
                 val now = System.currentTimeMillis()
                 if (now - lastKeyEventBackspaceTime > 50) {
-                    val diff = oldLen - newLen
+                    val diff = PHANTOM_KEYBOARD_BUFFER.length - currentFullText.length
                     repeat(diff) {
                         networkClient.sendKeyEvent(0x08, true)
                         networkClient.sendKeyEvent(0x08, false)
                     }
                 }
-            } else if (newLen > oldLen) {
-                // Characters added via soft keyboard (supports all unicode, emojis, accents, Enter)
-                val addedText = if (newVal.text.startsWith(PHANTOM_KEYBOARD_BUFFER)) {
-                    newVal.text.substring(PHANTOM_KEYBOARD_BUFFER.length)
-                } else if (newVal.text.length > PHANTOM_KEYBOARD_BUFFER.length) {
-                    newVal.text.takeLast(newVal.text.length - PHANTOM_KEYBOARD_BUFFER.length)
-                } else {
-                    newVal.text
-                }
-
-                if (addedText.isNotEmpty()) {
-                    if (addedText == "\n" || addedText == "\r\n") {
-                        networkClient.sendKeyEvent(0x0D, true)
-                        networkClient.sendKeyEvent(0x0D, false)
-                    } else {
-                        val parts = addedText.split(Regex("\r?\n"))
-                        parts.forEachIndexed { index, part ->
-                            if (part.isNotEmpty()) {
-                                networkClient.sendTextCommit(part)
-                            }
-                            if (index < parts.size - 1) {
-                                networkClient.sendKeyEvent(0x0D, true)
-                                networkClient.sendKeyEvent(0x0D, false)
-                            }
-                        }
-                    }
-                }
+                lastSentText = ""
+                textFieldState = TextFieldValue(
+                    text = PHANTOM_KEYBOARD_BUFFER,
+                    selection = TextRange(PHANTOM_KEYBOARD_BUFFER.length)
+                )
+                return@BasicTextField
             }
 
-            // Immediately reset phantom buffer so Backspace NEVER runs out of characters!
-            textFieldState = TextFieldValue(
-                text = PHANTOM_KEYBOARD_BUFFER,
-                selection = TextRange(PHANTOM_KEYBOARD_BUFFER.length)
-            )
+            // Extract the local text typed after the phantom prefix
+            val newLocalText = if (currentFullText.startsWith(PHANTOM_KEYBOARD_BUFFER)) {
+                currentFullText.substring(PHANTOM_KEYBOARD_BUFFER.length)
+            } else {
+                currentFullText.trimStart(' ')
+            }
+
+            // 2. Check for Enter / Newline
+            if (newLocalText.endsWith("\n") || newLocalText.endsWith("\r")) {
+                val beforeNewline = newLocalText.trimEnd('\n', '\r')
+                if (beforeNewline.isNotEmpty() && beforeNewline != lastSentText) {
+                    if (beforeNewline.startsWith(lastSentText)) {
+                        val added = beforeNewline.substring(lastSentText.length)
+                        if (added.isNotEmpty()) networkClient.sendTextCommit(added)
+                    } else {
+                        val common = getCommonPrefixLen(lastSentText, beforeNewline)
+                        val backspaces = lastSentText.length - common
+                        repeat(backspaces) {
+                            networkClient.sendKeyEvent(0x08, true)
+                            networkClient.sendKeyEvent(0x08, false)
+                        }
+                        val added = beforeNewline.substring(common)
+                        if (added.isNotEmpty()) networkClient.sendTextCommit(added)
+                    }
+                }
+                networkClient.sendKeyEvent(0x0D, true)
+                networkClient.sendKeyEvent(0x0D, false)
+                lastSentText = ""
+                textFieldState = TextFieldValue(
+                    text = PHANTOM_KEYBOARD_BUFFER,
+                    selection = TextRange(PHANTOM_KEYBOARD_BUFFER.length)
+                )
+                return@BasicTextField
+            }
+
+            // 3. Diffing between lastSentText and newLocalText
+            if (newLocalText == lastSentText) {
+                textFieldState = newVal
+                return@BasicTextField
+            }
+
+            if (newLocalText.startsWith(lastSentText)) {
+                // User appended new characters to the composing word
+                val added = newLocalText.substring(lastSentText.length)
+                networkClient.sendTextCommit(added)
+                lastSentText = newLocalText
+            } else if (lastSentText.startsWith(newLocalText)) {
+                // User backspaced within the composing word
+                val diff = lastSentText.length - newLocalText.length
+                repeat(diff) {
+                    networkClient.sendKeyEvent(0x08, true)
+                    networkClient.sendKeyEvent(0x08, false)
+                }
+                lastSentText = newLocalText
+            } else {
+                // Autocorrect or Gboard suggestion tapped!
+                val common = getCommonPrefixLen(lastSentText, newLocalText)
+                val backspaces = lastSentText.length - common
+                repeat(backspaces) {
+                    networkClient.sendKeyEvent(0x08, true)
+                    networkClient.sendKeyEvent(0x08, false)
+                }
+                val added = newLocalText.substring(common)
+                if (added.isNotEmpty()) {
+                    networkClient.sendTextCommit(added)
+                }
+                lastSentText = newLocalText
+            }
+
+            // If user completed a word with a space or buffer grew large, reset phantom buffer
+            if (newLocalText.endsWith(" ") || newLocalText.length > 40) {
+                lastSentText = ""
+                textFieldState = TextFieldValue(
+                    text = PHANTOM_KEYBOARD_BUFFER,
+                    selection = TextRange(PHANTOM_KEYBOARD_BUFFER.length)
+                )
+            } else {
+                textFieldState = newVal
+            }
         },
         keyboardOptions = KeyboardOptions(
             capitalization = KeyboardCapitalization.None,
-            autoCorrect = false,
+            autoCorrect = true,
             keyboardType = KeyboardType.Text,
             imeAction = ImeAction.None
         ),
@@ -761,22 +816,47 @@ fun RemoteSessionScreen(
             onDone = {
                 networkClient.sendKeyEvent(0x0D, true)
                 networkClient.sendKeyEvent(0x0D, false)
+                lastSentText = ""
+                textFieldState = TextFieldValue(
+                    text = PHANTOM_KEYBOARD_BUFFER,
+                    selection = TextRange(PHANTOM_KEYBOARD_BUFFER.length)
+                )
             },
             onGo = {
                 networkClient.sendKeyEvent(0x0D, true)
                 networkClient.sendKeyEvent(0x0D, false)
+                lastSentText = ""
+                textFieldState = TextFieldValue(
+                    text = PHANTOM_KEYBOARD_BUFFER,
+                    selection = TextRange(PHANTOM_KEYBOARD_BUFFER.length)
+                )
             },
             onNext = {
                 networkClient.sendKeyEvent(0x0D, true)
                 networkClient.sendKeyEvent(0x0D, false)
+                lastSentText = ""
+                textFieldState = TextFieldValue(
+                    text = PHANTOM_KEYBOARD_BUFFER,
+                    selection = TextRange(PHANTOM_KEYBOARD_BUFFER.length)
+                )
             },
             onSend = {
                 networkClient.sendKeyEvent(0x0D, true)
                 networkClient.sendKeyEvent(0x0D, false)
+                lastSentText = ""
+                textFieldState = TextFieldValue(
+                    text = PHANTOM_KEYBOARD_BUFFER,
+                    selection = TextRange(PHANTOM_KEYBOARD_BUFFER.length)
+                )
             },
             onSearch = {
                 networkClient.sendKeyEvent(0x0D, true)
                 networkClient.sendKeyEvent(0x0D, false)
+                lastSentText = ""
+                textFieldState = TextFieldValue(
+                    text = PHANTOM_KEYBOARD_BUFFER,
+                    selection = TextRange(PHANTOM_KEYBOARD_BUFFER.length)
+                )
             }
         ),
         singleLine = false,
@@ -1605,6 +1685,14 @@ fun ToolbarIconButton(
 private fun generateFakeId(): String {
     val rng = java.util.Random()
     return "${rng.nextInt(900)+100} ${rng.nextInt(900)+100} ${rng.nextInt(900)+100}"
+}
+
+private fun getCommonPrefixLen(s1: String, s2: String): Int {
+    val minLen = minOf(s1.length, s2.length)
+    for (i in 0 until minLen) {
+        if (s1[i] != s2[i]) return i
+    }
+    return minLen
 }
 
 @Composable

@@ -31,6 +31,7 @@ val SPECIAL_KEYS = listOf(
     SpecialKey("CUT", 0x58, isShortcut = true),
     SpecialKey("SEL ALL", 0x41, isShortcut = true),
     SpecialKey("UNDO", 0x5A, isShortcut = true),
+    SpecialKey("⇧+ENT", 0x0D, isShortcut = true, shortcutModifier = 0x10),
 
     // Standard Modifiers
     SpecialKey("CTRL", 0x11, isModifier = true),
