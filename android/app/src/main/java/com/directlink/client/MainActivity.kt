@@ -52,6 +52,7 @@ import kotlin.math.abs
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -572,6 +573,17 @@ fun RemoteSessionScreen(
     var desktopHeight by remember { mutableIntStateOf(prefs.getInt("last_desktop_h", 900)) }
     var desktopAspectRatio by remember { mutableFloatStateOf(prefs.getFloat("last_aspect_ratio", 1440f / 900f)) }
     var currentSurfaceView by remember { mutableStateOf<SurfaceView?>(null) }
+    var showSelectionToolbar by remember { mutableStateOf(false) }
+    var selectionMenuX by remember { mutableFloatStateOf(0f) }
+    var selectionMenuY by remember { mutableFloatStateOf(0f) }
+    var selectionToolbarDismissJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+
+    val sendCtrlShortcut: (Int) -> Unit = { vkKey ->
+        networkClient.sendKeyEvent(0x11, true)
+        networkClient.sendKeyEvent(vkKey, true)
+        networkClient.sendKeyEvent(vkKey, false)
+        networkClient.sendKeyEvent(0x11, false)
+    }
 
     LaunchedEffect(networkClient) {
         networkClient.onResolutionUpdateListener = { width, height ->
@@ -863,6 +875,26 @@ fun RemoteSessionScreen(
                             toggleNormalKeyboard()
                         }
                     }
+                    touchHandler.onTextSelectionDetected = { sx, sy ->
+                        activity.runOnUiThread {
+                            selectionMenuX = sx
+                            selectionMenuY = sy
+                            showSelectionToolbar = true
+                            selectionToolbarDismissJob?.cancel()
+                            selectionToolbarDismissJob = coroutineScope.launch {
+                                kotlinx.coroutines.delay(7000)
+                                showSelectionToolbar = false
+                            }
+                        }
+                    }
+                    touchHandler.onSingleTapDetected = {
+                        activity.runOnUiThread {
+                            if (showSelectionToolbar) {
+                                showSelectionToolbar = false
+                                selectionToolbarDismissJob?.cancel()
+                            }
+                        }
+                    }
                     overlayView.tag = touchHandler
                     overlayView.setOnTouchListener(touchHandler)
                     currentTouchHandler = touchHandler
@@ -883,6 +915,46 @@ fun RemoteSessionScreen(
                 VirtualMousePointer(
                     screenPxX = pointerScreenX,
                     screenPxY = pointerScreenY
+                )
+            }
+
+            // --- 3.5. FLOATING TEXT SELECTION TOOLBAR (ANDROID-STYLE SELECTION ACTIONS) ---
+            androidx.compose.animation.AnimatedVisibility(
+                visible = showSelectionToolbar,
+                enter = fadeIn() + scaleIn(initialScale = 0.85f),
+                exit = fadeOut() + scaleOut(targetScale = 0.85f)
+            ) {
+                FloatingTextSelectionToolbar(
+                    posX = selectionMenuX,
+                    posY = selectionMenuY,
+                    containerWidth = containerWidthPx,
+                    containerHeight = containerHeightPx,
+                    onCut = {
+                        sendCtrlShortcut(0x58) // Ctrl+X
+                        Toast.makeText(activity, "Cut", Toast.LENGTH_SHORT).show()
+                        showSelectionToolbar = false
+                    },
+                    onCopy = {
+                        sendCtrlShortcut(0x43) // Ctrl+C
+                        Toast.makeText(activity, "Copied", Toast.LENGTH_SHORT).show()
+                        showSelectionToolbar = false
+                    },
+                    onPaste = {
+                        sendCtrlShortcut(0x56) // Ctrl+V
+                        showSelectionToolbar = false
+                    },
+                    onSelectAll = {
+                        sendCtrlShortcut(0x41) // Ctrl+A
+                        selectionToolbarDismissJob?.cancel()
+                        selectionToolbarDismissJob = coroutineScope.launch {
+                            kotlinx.coroutines.delay(7000)
+                            showSelectionToolbar = false
+                        }
+                    },
+                    onDismiss = {
+                        showSelectionToolbar = false
+                        selectionToolbarDismissJob?.cancel()
+                    }
                 )
             }
 
@@ -1403,6 +1475,12 @@ fun RemoteSessionScreen(
                     onTapKey = { vk ->
                         networkClient.sendKeyEvent(vk, true)
                         networkClient.sendKeyEvent(vk, false)
+                    },
+                    onShortcut = { modifier, key ->
+                        networkClient.sendKeyEvent(modifier, true)
+                        networkClient.sendKeyEvent(key, true)
+                        networkClient.sendKeyEvent(key, false)
+                        networkClient.sendKeyEvent(modifier, false)
                     }
                 )
             }
@@ -1441,4 +1519,149 @@ fun ToolbarIconButton(
 private fun generateFakeId(): String {
     val rng = java.util.Random()
     return "${rng.nextInt(900)+100} ${rng.nextInt(900)+100} ${rng.nextInt(900)+100}"
+}
+
+@Composable
+fun FloatingTextSelectionToolbar(
+    posX: Float,
+    posY: Float,
+    containerWidth: Float,
+    containerHeight: Float,
+    onCut: () -> Unit,
+    onCopy: () -> Unit,
+    onPaste: () -> Unit,
+    onSelectAll: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val approxWidthPx = with(density) { 340.dp.toPx() }
+    val approxHeightPx = with(density) { 46.dp.toPx() }
+    val marginPx = with(density) { 16.dp.toPx() }
+    val spacingPx = with(density) { 28.dp.toPx() }
+
+    val clampedX = (posX - approxWidthPx / 2f).coerceIn(marginPx, (containerWidth - approxWidthPx - marginPx).coerceAtLeast(marginPx))
+    val preferredY = posY - approxHeightPx - spacingPx
+    val clampedY = if (preferredY < marginPx) {
+        (posY + spacingPx).coerceIn(marginPx, (containerHeight - approxHeightPx - marginPx).coerceAtLeast(marginPx))
+    } else {
+        preferredY.coerceIn(marginPx, (containerHeight - approxHeightPx - marginPx).coerceAtLeast(marginPx))
+    }
+
+    Box(
+        modifier = Modifier
+            .offset { IntOffset(clampedX.toInt(), clampedY.toInt()) }
+            .clip(RoundedCornerShape(24.dp))
+            .background(Color(0xF0181A22))
+            .border(
+                BorderStroke(
+                    1.dp,
+                    Brush.horizontalGradient(
+                        listOf(
+                            Color(0x8000E5FF),
+                            Color(0x400D6EFD),
+                            Color(0x20FFFFFF)
+                        )
+                    )
+                ),
+                RoundedCornerShape(24.dp)
+            )
+            .padding(horizontal = 6.dp, vertical = 4.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            // Cut Button
+            SelectionActionButton(
+                icon = Icons.Rounded.ContentCut,
+                label = "Cut",
+                onClick = onCut
+            )
+
+            SelectionDivider()
+
+            // Copy Button
+            SelectionActionButton(
+                icon = Icons.Rounded.ContentCopy,
+                label = "Copy",
+                onClick = onCopy
+            )
+
+            SelectionDivider()
+
+            // Paste Button
+            SelectionActionButton(
+                icon = Icons.Rounded.ContentPaste,
+                label = "Paste",
+                onClick = onPaste
+            )
+
+            SelectionDivider()
+
+            // Select All Button
+            SelectionActionButton(
+                icon = Icons.Rounded.SelectAll,
+                label = "Select All",
+                onClick = onSelectAll
+            )
+
+            SelectionDivider()
+
+            // Close Button (✕)
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = "Close",
+                    tint = Color(0xFFA0A0A0),
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SelectionActionButton(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        color = Color.Transparent,
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = Color(0xFF00E5FF),
+                modifier = Modifier.size(15.dp)
+            )
+            Text(
+                text = label,
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.2.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun SelectionDivider() {
+    Box(
+        modifier = Modifier
+            .width(1.dp)
+            .height(16.dp)
+            .background(Color(0x33FFFFFF))
+    )
 }

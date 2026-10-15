@@ -19,18 +19,43 @@ import androidx.compose.ui.unit.sp
 data class SpecialKey(
     val label: String,
     val vkCode: Int,
-    val isModifier: Boolean = false
+    val isModifier: Boolean = false,
+    val isShortcut: Boolean = false,
+    val shortcutModifier: Int = 0x11 // VK_CONTROL by default
 )
 
 val SPECIAL_KEYS = listOf(
-    SpecialKey("CTRL", 0x11, true),
-    SpecialKey("ALT", 0x12, true),
-    SpecialKey("SHIFT", 0x10, true),
-    SpecialKey("WIN", 0x5B, true),
+    // One-Tap Quick Action Shortcuts
+    SpecialKey("COPY", 0x43, isShortcut = true),
+    SpecialKey("PASTE", 0x56, isShortcut = true),
+    SpecialKey("CUT", 0x58, isShortcut = true),
+    SpecialKey("SEL ALL", 0x41, isShortcut = true),
+    SpecialKey("UNDO", 0x5A, isShortcut = true),
+
+    // Standard Modifiers
+    SpecialKey("CTRL", 0x11, isModifier = true),
+    SpecialKey("ALT", 0x12, isModifier = true),
+    SpecialKey("SHIFT", 0x10, isModifier = true),
+    SpecialKey("WIN", 0x5B, isModifier = true),
+
+    // Essential Keys
     SpecialKey("ESC", 0x1B),
     SpecialKey("TAB", 0x09),
     SpecialKey("ENT", 0x0D),
     SpecialKey("DEL", 0x2E),
+    SpecialKey("BKSP", 0x08),
+    SpecialKey("SPACE", 0x20),
+
+    // Common Alphabet Keys for custom combos (Ctrl+C, Ctrl+V, etc.)
+    SpecialKey("A", 0x41),
+    SpecialKey("C", 0x43),
+    SpecialKey("V", 0x56),
+    SpecialKey("X", 0x58),
+    SpecialKey("Z", 0x5A),
+    SpecialKey("F", 0x46),
+    SpecialKey("S", 0x53),
+
+    // Navigation & Editing
     SpecialKey("↑", 0x26),
     SpecialKey("↓", 0x28),
     SpecialKey("←", 0x25),
@@ -40,6 +65,8 @@ val SPECIAL_KEYS = listOf(
     SpecialKey("PGUP", 0x21),
     SpecialKey("PGDN", 0x22),
     SpecialKey("INS", 0x2D),
+
+    // Function Keys
     SpecialKey("F1", 0x70),
     SpecialKey("F2", 0x71),
     SpecialKey("F3", 0x72),
@@ -59,7 +86,8 @@ val SPECIAL_KEYS = listOf(
 fun SpecialKeysToolbar(
     activeModifiers: Set<Int>,
     onToggleModifier: (Int) -> Unit,
-    onTapKey: (Int) -> Unit
+    onTapKey: (Int) -> Unit,
+    onShortcut: ((modifier: Int, key: Int) -> Unit)? = null
 ) {
     LazyRow(
         modifier = Modifier
@@ -71,18 +99,28 @@ fun SpecialKeysToolbar(
     ) {
         items(SPECIAL_KEYS) { key ->
             val isActive = activeModifiers.contains(key.vkCode)
-            val bgColor = if (isActive) Color(0xFF0D6EFD) else Color(0xFF2C2C2C)
-            val textColor = if (isActive) Color.White else Color(0xFFE0E0E0)
+            val isAction = key.isShortcut
+            
+            val bgColor = when {
+                isActive -> Color(0xFF0D6EFD)
+                isAction -> Color(0xFF132F4C)
+                else -> Color(0xFF2C2C2C)
+            }
+            val textColor = when {
+                isActive -> Color.White
+                isAction -> Color(0xFF00E5FF)
+                else -> Color(0xFFE0E0E0)
+            }
             
             Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
+                    .clip(RoundedCornerShape(6.dp))
                     .background(bgColor)
                     .clickable {
-                        if (key.isModifier) {
-                            onToggleModifier(key.vkCode)
-                        } else {
-                            onTapKey(key.vkCode)
+                        when {
+                            key.isShortcut -> onShortcut?.invoke(key.shortcutModifier, key.vkCode)
+                            key.isModifier -> onToggleModifier(key.vkCode)
+                            else -> onTapKey(key.vkCode)
                         }
                     }
                     .padding(horizontal = 12.dp, vertical = 8.dp),
@@ -92,7 +130,7 @@ fun SpecialKeysToolbar(
                     text = key.label,
                     color = textColor,
                     fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = if (isAction || isActive) FontWeight.Bold else FontWeight.Medium
                 )
             }
         }

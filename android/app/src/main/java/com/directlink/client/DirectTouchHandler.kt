@@ -28,6 +28,10 @@ class DirectTouchHandler(
     var onTwoFingerDoubleTap: (() -> Unit)? = null
     var onUserInteraction: (() -> Unit)? = null
 
+    // Callbacks for Android-style floating text selection toolbar
+    var onTextSelectionDetected: ((screenX: Float, screenY: Float) -> Unit)? = null
+    var onSingleTapDetected: (() -> Unit)? = null
+
     // Callback reporting normalized cursor coordinates (0f..1f) for UI cursor overlay in MOUSE mode
     var onCursorPositionChanged: ((normX: Float, normY: Float) -> Unit)? = null
 
@@ -99,6 +103,7 @@ class DirectTouchHandler(
             networkClient.sendMouseMove(getNormX(e.x), getNormY(e.y))
             networkClient.sendMouseButton(1, true)
             networkClient.sendMouseButton(1, false)
+            onSingleTapDetected?.invoke()
             return true
         }
 
@@ -511,9 +516,11 @@ class DirectTouchHandler(
                             networkClient.sendMouseButton(1, true)
                             networkClient.sendMouseButton(1, false)
                         }, 25)
+                        onTextSelectionDetected?.invoke(handeskDoubleTapStartX, handeskDoubleTapStartY)
                     } else if (isHandeskHoldDragging) {
                         networkClient.sendMouseButton(1, false)
                         isHandeskHoldDragging = false
+                        onTextSelectionDetected?.invoke(event.x, event.y)
                     }
                 }
             }
@@ -606,6 +613,7 @@ class DirectTouchHandler(
                     if (touchIsDragging) {
                         networkClient.sendMouseButton(1, false) // Left UP
                         touchIsDragging = false
+                        onTextSelectionDetected?.invoke(event.x, event.y)
                     } else if (!touchLongPressTriggered && duration < 350) {
                         val now = System.currentTimeMillis()
                         val distFromLastTap = hypot(event.x - touchLastTapX, event.y - touchLastTapY)
@@ -624,6 +632,7 @@ class DirectTouchHandler(
                                 networkClient.sendMouseButton(1, false)
                             }, 20)
                             touchLastTapTime = 0L
+                            onTextSelectionDetected?.invoke(event.x, event.y)
                         } else {
                             // Single Left Click
                             networkClient.sendMouseButton(1, true)
@@ -631,6 +640,7 @@ class DirectTouchHandler(
                             touchLastTapTime = now
                             touchLastTapX = event.x
                             touchLastTapY = event.y
+                            onSingleTapDetected?.invoke()
                         }
                     }
                 } else if (maxPointers == 2 && duration < 600 && gestureMaxMove < 200f) {
@@ -764,6 +774,9 @@ class DirectTouchHandler(
                         networkClient.sendMouseButton(1, false) // Left UP
                         mouseDragActive = false
                         mouseDoubleTapPending = false
+                        val cursorScreenX = touchTransform.normToScreenX(virtualCursorNormX)
+                        val cursorScreenY = touchTransform.normToScreenY(virtualCursorNormY)
+                        onTextSelectionDetected?.invoke(cursorScreenX, cursorScreenY)
                     } else if (!mouseLongPressTriggered && duration < 300) {
                         val now = System.currentTimeMillis()
                         val isDoubleTap = (now - mouseLastTapTime < 300)
@@ -777,11 +790,15 @@ class DirectTouchHandler(
                                 networkClient.sendMouseButton(1, false)
                             }, 20)
                             mouseLastTapTime = 0L
+                            val cursorScreenX = touchTransform.normToScreenX(virtualCursorNormX)
+                            val cursorScreenY = touchTransform.normToScreenY(virtualCursorNormY)
+                            onTextSelectionDetected?.invoke(cursorScreenX, cursorScreenY)
                         } else {
                             // Single Click at current cursor location
                             networkClient.sendMouseButton(1, true)
                             networkClient.sendMouseButton(1, false)
                             mouseLastTapTime = now
+                            onSingleTapDetected?.invoke()
                         }
                     }
                 } else if (maxPointers == 2 && duration < 400 && gestureMaxMove < 80f) {
