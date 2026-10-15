@@ -950,10 +950,6 @@ fun RemoteSessionScreen(
                             kotlinx.coroutines.delay(7000)
                             showSelectionToolbar = false
                         }
-                    },
-                    onDismiss = {
-                        showSelectionToolbar = false
-                        selectionToolbarDismissJob?.cancel()
                     }
                 )
             }
@@ -1530,12 +1526,11 @@ fun FloatingTextSelectionToolbar(
     onCut: () -> Unit,
     onCopy: () -> Unit,
     onPaste: () -> Unit,
-    onSelectAll: () -> Unit,
-    onDismiss: () -> Unit
+    onSelectAll: () -> Unit
 ) {
     val density = androidx.compose.ui.platform.LocalDensity.current
-    val approxWidthPx = with(density) { 340.dp.toPx() }
-    val approxHeightPx = with(density) { 46.dp.toPx() }
+    val approxWidthPx = with(density) { 280.dp.toPx() }
+    val approxHeightPx = with(density) { 42.dp.toPx() }
     val marginPx = with(density) { 16.dp.toPx() }
     val spacingPx = with(density) { 28.dp.toPx() }
 
@@ -1547,121 +1542,55 @@ fun FloatingTextSelectionToolbar(
         preferredY.coerceIn(marginPx, (containerHeight - approxHeightPx - marginPx).coerceAtLeast(marginPx))
     }
 
-    Box(
-        modifier = Modifier
-            .offset { IntOffset(clampedX.toInt(), clampedY.toInt()) }
-            .clip(RoundedCornerShape(24.dp))
-            .background(Color(0xF0181A22))
-            .border(
-                BorderStroke(
-                    1.dp,
-                    Brush.horizontalGradient(
-                        listOf(
-                            Color(0x8000E5FF),
-                            Color(0x400D6EFD),
-                            Color(0x20FFFFFF)
-                        )
-                    )
-                ),
-                RoundedCornerShape(24.dp)
-            )
-            .padding(horizontal = 6.dp, vertical = 4.dp)
+    Surface(
+        modifier = Modifier.offset { IntOffset(clampedX.toInt(), clampedY.toInt()) },
+        shape = RoundedCornerShape(24.dp),
+        color = Color(0xFF2C2C2C),
+        shadowElevation = 8.dp,
+        tonalElevation = 4.dp
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp)
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
         ) {
-            // Cut Button
-            SelectionActionButton(
-                icon = Icons.Rounded.ContentCut,
-                label = "Cut",
-                onClick = onCut
-            )
-
-            SelectionDivider()
-
-            // Copy Button
-            SelectionActionButton(
-                icon = Icons.Rounded.ContentCopy,
-                label = "Copy",
-                onClick = onCopy
-            )
-
-            SelectionDivider()
-
-            // Paste Button
-            SelectionActionButton(
-                icon = Icons.Rounded.ContentPaste,
-                label = "Paste",
-                onClick = onPaste
-            )
-
-            SelectionDivider()
-
-            // Select All Button
-            SelectionActionButton(
-                icon = Icons.Rounded.SelectAll,
-                label = "Select All",
-                onClick = onSelectAll
-            )
-
-            SelectionDivider()
-
-            // Close Button (✕)
-            IconButton(
-                onClick = onDismiss,
-                modifier = Modifier.size(32.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Close,
-                    contentDescription = "Close",
-                    tint = Color(0xFFA0A0A0),
-                    modifier = Modifier.size(16.dp)
-                )
-            }
+            AndroidSelectionButton(label = "Cut", onClick = onCut)
+            AndroidSelectionDivider()
+            AndroidSelectionButton(label = "Copy", onClick = onCopy)
+            AndroidSelectionDivider()
+            AndroidSelectionButton(label = "Paste", onClick = onPaste)
+            AndroidSelectionDivider()
+            AndroidSelectionButton(label = "Select all", onClick = onSelectAll)
         }
     }
 }
 
 @Composable
-private fun SelectionActionButton(
-    icon: ImageVector,
+private fun AndroidSelectionButton(
     label: String,
     onClick: () -> Unit
 ) {
-    Surface(
-        onClick = onClick,
-        color = Color.Transparent,
-        shape = RoundedCornerShape(16.dp)
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(20.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = Color(0xFF00E5FF),
-                modifier = Modifier.size(15.dp)
-            )
-            Text(
-                text = label,
-                color = Color.White,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.2.sp
-            )
-        }
+        Text(
+            text = label,
+            color = Color(0xFFF0F0F0),
+            fontSize = 13.5.sp,
+            fontWeight = FontWeight.Medium
+        )
     }
 }
 
 @Composable
-private fun SelectionDivider() {
+private fun AndroidSelectionDivider() {
     Box(
         modifier = Modifier
             .width(1.dp)
             .height(16.dp)
-            .background(Color(0x33FFFFFF))
+            .background(Color(0x2EFFFFFF))
     )
 }
