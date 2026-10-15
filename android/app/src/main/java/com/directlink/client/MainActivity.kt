@@ -26,7 +26,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.rounded.*
@@ -69,6 +74,7 @@ private val TextPrimary = Color(0xFFE0E0E0)
 private val TextSecondary = Color(0xFFA0A0A0)
 private val ErrorRed = Color(0xFFCF6679)
 private val SuccessGreen = Color(0xFF34C759)
+private const val PHANTOM_KEYBOARD_BUFFER = "                              " // 30 spaces for bulletproof backspace detection
 
 class MainActivity : ComponentActivity() {
     private val networkClient = NativeClient()
@@ -625,7 +631,15 @@ fun RemoteSessionScreen(
     }
 
     val activeModifiers = remember { mutableStateListOf<Int>() }
-    var textBuffer by remember { mutableStateOf("") }
+    var textFieldState by remember {
+        mutableStateOf(
+            TextFieldValue(
+                text = PHANTOM_KEYBOARD_BUFFER,
+                selection = TextRange(PHANTOM_KEYBOARD_BUFFER.length)
+            )
+        )
+    }
+    var lastKeyEventBackspaceTime by remember { mutableLongStateOf(0L) }
     
     val viewportScale = remember { androidx.compose.animation.core.Animatable(1f) }
     val viewportOffsetX = remember { androidx.compose.animation.core.Animatable(0f) }
@@ -649,6 +663,10 @@ fun RemoteSessionScreen(
             releaseAllRemoteKeys()
         } else {
             userDismissedKeyboard = false
+            textFieldState = TextFieldValue(
+                text = PHANTOM_KEYBOARD_BUFFER,
+                selection = TextRange(PHANTOM_KEYBOARD_BUFFER.length)
+            )
             isKeyboardActive = true
             focusRequester.requestFocus()
             keyboardController?.show()
@@ -679,26 +697,89 @@ fun RemoteSessionScreen(
         onDisconnect()
     }
 
-    // --- HIDDEN KEYBOARD INJECTOR ---
+    // --- HIDDEN KEYBOARD INJECTOR WITH PHANTOM BUFFER (100% RELIABLE BACKSPACE & NATIVE ENTER) ---
     BasicTextField(
-        value = textBuffer,
-        onValueChange = { newStr ->
+        value = textFieldState,
+        onValueChange = { newVal ->
             if (!isKeyboardActive) return@BasicTextField
-            if (newStr.length < textBuffer.length) {
-                // Backspace detected via string shrinkage
-                val diff = textBuffer.length - newStr.length
-                repeat(diff) {
-                    networkClient.sendKeyEvent(0x08, true)
-                    networkClient.sendKeyEvent(0x08, false)
+            
+            val oldLen = textFieldState.text.length
+            val newLen = newVal.text.length
+
+            if (newLen < oldLen) {
+                // Backspace detected via string shrinkage!
+                val now = System.currentTimeMillis()
+                if (now - lastKeyEventBackspaceTime > 50) {
+                    val diff = oldLen - newLen
+                    repeat(diff) {
+                        networkClient.sendKeyEvent(0x08, true)
+                        networkClient.sendKeyEvent(0x08, false)
+                    }
                 }
-            } else if (newStr.length > textBuffer.length) {
-                // Characters added via soft keyboard (supports all unicode, emojis, accents)
-                val diffStr = newStr.substring(textBuffer.length)
-                networkClient.sendTextCommit(diffStr)
+            } else if (newLen > oldLen) {
+                // Characters added via soft keyboard (supports all unicode, emojis, accents, Enter)
+                val addedText = if (newVal.text.startsWith(PHANTOM_KEYBOARD_BUFFER)) {
+                    newVal.text.substring(PHANTOM_KEYBOARD_BUFFER.length)
+                } else if (newVal.text.length > PHANTOM_KEYBOARD_BUFFER.length) {
+                    newVal.text.takeLast(newVal.text.length - PHANTOM_KEYBOARD_BUFFER.length)
+                } else {
+                    newVal.text
+                }
+
+                if (addedText.isNotEmpty()) {
+                    if (addedText == "\n" || addedText == "\r\n") {
+                        networkClient.sendKeyEvent(0x0D, true)
+                        networkClient.sendKeyEvent(0x0D, false)
+                    } else {
+                        val parts = addedText.split(Regex("\r?\n"))
+                        parts.forEachIndexed { index, part ->
+                            if (part.isNotEmpty()) {
+                                networkClient.sendTextCommit(part)
+                            }
+                            if (index < parts.size - 1) {
+                                networkClient.sendKeyEvent(0x0D, true)
+                                networkClient.sendKeyEvent(0x0D, false)
+                            }
+                        }
+                    }
+                }
             }
-            textBuffer = if (newStr.length > 50) "" else newStr
+
+            // Immediately reset phantom buffer so Backspace NEVER runs out of characters!
+            textFieldState = TextFieldValue(
+                text = PHANTOM_KEYBOARD_BUFFER,
+                selection = TextRange(PHANTOM_KEYBOARD_BUFFER.length)
+            )
         },
-        keyboardOptions = KeyboardOptions(autoCorrect = false),
+        keyboardOptions = KeyboardOptions(
+            capitalization = KeyboardCapitalization.None,
+            autoCorrect = false,
+            keyboardType = KeyboardType.Text,
+            imeAction = ImeAction.None
+        ),
+        keyboardActions = KeyboardActions(
+            onDone = {
+                networkClient.sendKeyEvent(0x0D, true)
+                networkClient.sendKeyEvent(0x0D, false)
+            },
+            onGo = {
+                networkClient.sendKeyEvent(0x0D, true)
+                networkClient.sendKeyEvent(0x0D, false)
+            },
+            onNext = {
+                networkClient.sendKeyEvent(0x0D, true)
+                networkClient.sendKeyEvent(0x0D, false)
+            },
+            onSend = {
+                networkClient.sendKeyEvent(0x0D, true)
+                networkClient.sendKeyEvent(0x0D, false)
+            },
+            onSearch = {
+                networkClient.sendKeyEvent(0x0D, true)
+                networkClient.sendKeyEvent(0x0D, false)
+            }
+        ),
+        singleLine = false,
         modifier = Modifier
             .size(1.dp)
             .focusRequester(focusRequester)
@@ -713,9 +794,18 @@ fun RemoteSessionScreen(
                 if (keyEvent.type == KeyEventType.KeyDown || keyEvent.type == KeyEventType.KeyUp) {
                     val isDown = keyEvent.type == KeyEventType.KeyDown
                     val vkCode = when (keyEvent.key) {
-                        Key.Backspace -> 0x08
-                        Key.Enter -> 0x0D
+                        Key.Backspace -> {
+                            if (isDown) lastKeyEventBackspaceTime = System.currentTimeMillis()
+                            0x08
+                        }
+                        Key.Enter, Key.NumPadEnter -> 0x0D
                         Key.Spacebar -> 0x20
+                        Key.Tab -> 0x09
+                        Key.Escape -> 0x1B
+                        Key.DirectionUp -> 0x26
+                        Key.DirectionDown -> 0x28
+                        Key.DirectionLeft -> 0x25
+                        Key.DirectionRight -> 0x27
                         else -> 0
                     }
                     if (vkCode != 0) {
