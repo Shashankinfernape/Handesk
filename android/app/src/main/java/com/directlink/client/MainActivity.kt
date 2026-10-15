@@ -303,7 +303,7 @@ fun HomeTab(networkClient: NativeClient, activity: Activity, onConnected: () -> 
                     onValueChange = { hostIp = it },
                     placeholder = { Text("Enter Remote ID or IP", color = Color.DarkGray) },
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     colors = OutlinedTextFieldDefaults.colors(
