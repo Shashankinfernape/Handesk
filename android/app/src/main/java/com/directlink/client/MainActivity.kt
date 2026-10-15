@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -15,6 +16,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
@@ -563,6 +566,7 @@ fun RemoteSessionScreen(
     var isKeyboardActive by remember { mutableStateOf(false) }
     var showSpecialKeys by remember { mutableStateOf(false) }
     var userDismissedKeyboard by remember { mutableStateOf(true) }
+    var isAutoKeyboardEnabled by remember { mutableStateOf(prefs.getBoolean("auto_keyboard_enabled", true)) }
     var isLandscape by remember { mutableStateOf(true) }
     var desktopWidth by remember { mutableIntStateOf(prefs.getInt("last_desktop_w", 1440)) }
     var desktopHeight by remember { mutableIntStateOf(prefs.getInt("last_desktop_h", 900)) }
@@ -589,17 +593,19 @@ fun RemoteSessionScreen(
         }
     }
 
-    LaunchedEffect(networkClient) {
+    LaunchedEffect(networkClient, isAutoKeyboardEnabled) {
         networkClient.onTextFocusUpdateListener = { focused, _, _, _, _ ->
-            activity.runOnUiThread {
-                if (focused) {
-                    if (!isKeyboardActive) {
-                        userDismissedKeyboard = false
-                        isKeyboardActive = true
-                        focusRequester.requestFocus()
-                        keyboardController?.show()
-                        val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
-                        imm?.showSoftInput(activity.currentFocus ?: activity.window.decorView, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+            if (isAutoKeyboardEnabled) {
+                activity.runOnUiThread {
+                    if (focused) {
+                        if (!isKeyboardActive) {
+                            userDismissedKeyboard = false
+                            isKeyboardActive = true
+                            focusRequester.requestFocus()
+                            keyboardController?.show()
+                            val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+                            imm?.showSoftInput(activity.currentFocus ?: activity.window.decorView, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                        }
                     }
                 }
             }
@@ -1004,7 +1010,8 @@ fun RemoteSessionScreen(
                 Row(
                     modifier = Modifier
                         .background(Color(0xD91E1E1E), RoundedCornerShape(32.dp))
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                        .horizontalScroll(rememberScrollState()),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
@@ -1015,6 +1022,64 @@ fun RemoteSessionScreen(
                         tint = if (isKeyboardActive) BrandBlue else TextPrimary,
                         onClick = { toggleNormalKeyboard() }
                     )
+                    
+                    // Keyboard Auto-Popup Toggle (Turn ON / OFF in Control Panel)
+                    Surface(
+                        onClick = { 
+                            isAutoKeyboardEnabled = !isAutoKeyboardEnabled
+                            prefs.edit().putBoolean("auto_keyboard_enabled", isAutoKeyboardEnabled).apply()
+                            Toast.makeText(
+                                activity,
+                                if (isAutoKeyboardEnabled) "Keyboard Auto-Popup: ON" else "Keyboard Auto-Popup: OFF",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        },
+                        shape = RoundedCornerShape(20.dp),
+                        color = Color.Transparent,
+                        border = BorderStroke(
+                            1.dp,
+                            if (isAutoKeyboardEnabled) Brush.horizontalGradient(listOf(Color(0xFF00E5FF), Color(0xFF0D6EFD)))
+                            else Brush.horizontalGradient(listOf(Color(0x33FFFFFF), Color(0x18FFFFFF)))
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .background(
+                                    if (isAutoKeyboardEnabled) {
+                                        Brush.horizontalGradient(
+                                            listOf(
+                                                Color(0x3300E5FF),
+                                                Color(0x330D6EFD)
+                                            )
+                                        )
+                                    } else {
+                                        Brush.horizontalGradient(
+                                            listOf(
+                                                Color(0x1AFFFFFF),
+                                                Color(0x0DFFFFFF)
+                                            )
+                                        )
+                                    }
+                                )
+                                .padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isAutoKeyboardEnabled) Icons.Rounded.AutoAwesome else Icons.Rounded.KeyboardHide,
+                                contentDescription = "Auto-Pop Keyboard",
+                                tint = if (isAutoKeyboardEnabled) Color(0xFF00E5FF) else Color(0xFF888888),
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Text(
+                                text = if (isAutoKeyboardEnabled) "Auto-Pop: ON" else "Auto-Pop: OFF",
+                                color = if (isAutoKeyboardEnabled) Color.White else Color(0xFF888888),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 0.2.sp
+                            )
+                        }
+                    }
                     
                     // Special Keys Toggle (Google Material Chip / Pill Style with KeyboardCommandKey)
                     Surface(
