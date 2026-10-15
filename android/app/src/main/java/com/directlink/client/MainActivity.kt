@@ -26,6 +26,8 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.rounded.*
+import androidx.compose.material.icons.automirrored.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -952,7 +954,7 @@ fun RemoteSessionScreen(
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Filled.Close,
+                                        imageVector = Icons.Rounded.Close,
                                         contentDescription = "Reset Zoom",
                                         tint = Color.White,
                                         modifier = Modifier.size(13.dp)
@@ -1006,15 +1008,15 @@ fun RemoteSessionScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // System Keyboard
+                    // System Keyboard (Google Keyboard Icon)
                     ToolbarIconButton(
-                        icon = Icons.Filled.Edit,
+                        icon = Icons.Rounded.Keyboard,
                         label = "Keyboard",
                         tint = if (isKeyboardActive) BrandBlue else TextPrimary,
                         onClick = { toggleNormalKeyboard() }
                     )
                     
-                    // Special Keys Toggle (Compact pill button in toolbar panel)
+                    // Special Keys Toggle (Google Material Chip / Pill Style with KeyboardCommandKey)
                     Surface(
                         onClick = { 
                             showSpecialKeys = !showSpecialKeys 
@@ -1031,7 +1033,7 @@ fun RemoteSessionScreen(
                             else Brush.horizontalGradient(listOf(Color(0x55FFFFFF), Color(0x22FFFFFF)))
                         )
                     ) {
-                        Box(
+                        Row(
                             modifier = Modifier
                                 .background(
                                     if (showSpecialKeys) {
@@ -1051,9 +1053,16 @@ fun RemoteSessionScreen(
                                         )
                                     }
                                 )
-                                .padding(horizontal = 12.dp, vertical = 7.dp),
-                            contentAlignment = Alignment.Center
+                                .padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
+                            Icon(
+                                imageVector = Icons.Rounded.KeyboardCommandKey,
+                                contentDescription = "Special Keys",
+                                tint = if (showSpecialKeys) Color.White else Color(0xFFE0E0E0),
+                                modifier = Modifier.size(16.dp)
+                            )
                             Text(
                                 text = "Special Keys",
                                 color = if (showSpecialKeys) Color.White else Color(0xFFE0E0E0),
@@ -1064,9 +1073,9 @@ fun RemoteSessionScreen(
                         }
                     }
                     
-                    // Orientation Toggle
+                    // Orientation Toggle (Google Screen Rotation Icon)
                     ToolbarIconButton(
-                        icon = Icons.Filled.Refresh,
+                        icon = Icons.Rounded.ScreenRotation,
                         label = "Rotate",
                         tint = if (isLandscape) TextPrimary else BrandBlue,
                         onClick = { 
@@ -1075,21 +1084,21 @@ fun RemoteSessionScreen(
                         }
                     )
                     
-                    // Network Mode Badge
+                    // Network Mode Badge (Google Wifi / Public Globe Icon)
                     ToolbarIconButton(
-                        icon = Icons.Filled.Share,
+                        icon = if (isTailscale) Icons.Rounded.Public else Icons.Rounded.Wifi,
                         label = if (isTailscale) "WAN" else "LAN",
                         tint = if (isTailscale) Color(0xFF00E5FF) else Color(0xFF00E676),
                         onClick = { }
                     )
 
-                    // Gesture Interaction Mode
+                    // Gesture Interaction Mode (Google Touch / Click / Mouse Icons)
                     Box {
                         ToolbarIconButton(
                             icon = when (activeGestureMode) {
-                                GestureMode.HANDESK -> Icons.Filled.Star
-                                GestureMode.TOUCH -> Icons.Filled.Place
-                                GestureMode.MOUSE -> Icons.Filled.Send
+                                GestureMode.HANDESK -> Icons.Rounded.TouchApp
+                                GestureMode.TOUCH -> Icons.Rounded.AdsClick
+                                GestureMode.MOUSE -> Icons.Rounded.Mouse
                             },
                             label = activeGestureMode.title,
                             tint = BrandBlue,
@@ -1106,13 +1115,25 @@ fun RemoteSessionScreen(
                                     text = {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             if (activeGestureMode == mode) {
-                                                Icon(Icons.Filled.Check, contentDescription = null, tint = BrandBlue, modifier = Modifier.size(18.dp))
+                                                Icon(Icons.Rounded.Check, contentDescription = null, tint = BrandBlue, modifier = Modifier.size(18.dp))
                                             } else {
                                                 Spacer(Modifier.width(18.dp))
                                             }
                                             Spacer(Modifier.width(12.dp))
                                             Text(mode.title, color = TextPrimary, fontSize = 14.sp)
                                         }
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = when (mode) {
+                                                GestureMode.HANDESK -> Icons.Rounded.TouchApp
+                                                GestureMode.TOUCH -> Icons.Rounded.AdsClick
+                                                GestureMode.MOUSE -> Icons.Rounded.Mouse
+                                            },
+                                            contentDescription = null,
+                                            tint = if (activeGestureMode == mode) BrandBlue else TextSecondary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
                                     },
                                     onClick = {
                                         activeGestureMode = mode
@@ -1127,7 +1148,7 @@ fun RemoteSessionScreen(
                             DropdownMenuItem(
                                 text = {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Filled.Info, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(18.dp))
+                                        Icon(Icons.Rounded.Info, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(18.dp))
                                         Spacer(Modifier.width(12.dp))
                                         Text("Gesture Guide...", color = TextSecondary, fontSize = 14.sp)
                                     }
@@ -1141,10 +1162,10 @@ fun RemoteSessionScreen(
                         }
                     }
 
-                    // Display Quality
+                    // Display Quality (Google Tune Equalizer Icon)
                     Box {
                         ToolbarIconButton(
-                            icon = Icons.Filled.Settings,
+                            icon = Icons.Rounded.Tune,
                             label = "Quality",
                             onClick = { expandedQualityMenu = true }
                         )
@@ -1177,7 +1198,7 @@ fun RemoteSessionScreen(
                                     text = { 
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             if (currentQuality == label) {
-                                                Icon(Icons.Filled.Check, contentDescription = null, tint = BrandBlue, modifier = Modifier.size(18.dp))
+                                                Icon(Icons.Rounded.Check, contentDescription = null, tint = BrandBlue, modifier = Modifier.size(18.dp))
                                             } else {
                                                 Spacer(Modifier.width(18.dp))
                                             }
@@ -1198,10 +1219,10 @@ fun RemoteSessionScreen(
                         }
                     }
                     
-                    // Frame Rate
+                    // Frame Rate (Google Speed Gauge Icon)
                     Box {
                         ToolbarIconButton(
-                            icon = Icons.Filled.List,
+                            icon = Icons.Rounded.Speed,
                             label = "${currentFps} FPS",
                             onClick = { expandedFpsMenu = true }
                         )
@@ -1217,7 +1238,7 @@ fun RemoteSessionScreen(
                                     text = { 
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             if (currentFps == fps) {
-                                                Icon(Icons.Filled.Check, contentDescription = null, tint = BrandBlue, modifier = Modifier.size(18.dp))
+                                                Icon(Icons.Rounded.Check, contentDescription = null, tint = BrandBlue, modifier = Modifier.size(18.dp))
                                             } else {
                                                 Spacer(Modifier.width(18.dp))
                                             }
@@ -1248,9 +1269,9 @@ fun RemoteSessionScreen(
                         }
                     }
 
-                    // Audio PC Toggle
+                    // Audio PC Toggle (Google VolumeUp / VolumeOff Icons)
                     ToolbarIconButton(
-                        icon = if (isPcAudioMuted) Icons.Filled.Close else Icons.Filled.PlayArrow,
+                        icon = if (isPcAudioMuted) Icons.AutoMirrored.Rounded.VolumeOff else Icons.AutoMirrored.Rounded.VolumeUp,
                         label = "Audio",
                         tint = if (isPcAudioMuted) TextSecondary else SuccessGreen,
                         onClick = { 
@@ -1262,9 +1283,9 @@ fun RemoteSessionScreen(
                     // Divider
                     Box(modifier = Modifier.height(24.dp).width(1.dp).background(SurfaceVariantDark))
                     
-                    // Disconnect
+                    // Disconnect (Google Power Button Icon)
                     ToolbarIconButton(
-                        icon = Icons.Filled.Close,
+                        icon = Icons.Rounded.PowerSettingsNew,
                         label = "Disconnect",
                         tint = ErrorRed,
                         onClick = {
@@ -1273,9 +1294,9 @@ fun RemoteSessionScreen(
                         }
                     )
                     
-                    // Hide Toolbar
+                    // Hide Toolbar (Google Arrow Up)
                     ToolbarIconButton(
-                        icon = Icons.Filled.KeyboardArrowUp,
+                        icon = Icons.Rounded.KeyboardArrowUp,
                         label = "Hide",
                         onClick = { showToolbar = false }
                     )
@@ -1295,7 +1316,7 @@ fun RemoteSessionScreen(
                         )
                         .padding(horizontal = 24.dp, vertical = 4.dp)
                 ) {
-                    Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Menu", tint = Color.White)
+                    Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = "Menu", tint = Color.White)
                 }
             }
         }
