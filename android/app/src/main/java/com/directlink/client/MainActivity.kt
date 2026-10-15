@@ -346,6 +346,10 @@ fun HomeTab(networkClient: NativeClient, activity: Activity, onConnected: () -> 
                 
                 Button(
                     onClick = {
+                        val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+                        imm?.hideSoftInputFromWindow(activity.window.decorView.windowToken, 0)
+                        activity.currentFocus?.clearFocus()
+
                         prefs.edit().putString("last_ip", hostIp).apply()
                         
                         // Maintain recent history
@@ -556,7 +560,7 @@ fun RemoteSessionScreen(
     }
     var isKeyboardActive by remember { mutableStateOf(false) }
     var showSpecialKeys by remember { mutableStateOf(false) }
-    var isKeyboardClosingPhase by remember { mutableStateOf(false) }
+    var userDismissedKeyboard by remember { mutableStateOf(true) }
     var isLandscape by remember { mutableStateOf(true) }
     var desktopWidth by remember { mutableIntStateOf(prefs.getInt("last_desktop_w", 1440)) }
     var desktopHeight by remember { mutableIntStateOf(prefs.getInt("last_desktop_h", 900)) }
@@ -582,6 +586,24 @@ fun RemoteSessionScreen(
             }
         }
     }
+
+    LaunchedEffect(networkClient) {
+        networkClient.onTextFocusUpdateListener = { focused, _, _, _, _ ->
+            activity.runOnUiThread {
+                if (focused) {
+                    if (!isKeyboardActive) {
+                        userDismissedKeyboard = false
+                        isKeyboardActive = true
+                        focusRequester.requestFocus()
+                        keyboardController?.show()
+                        val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+                        imm?.showSoftInput(activity.currentFocus ?: activity.window.decorView, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                    }
+                }
+            }
+        }
+    }
+
     val activeModifiers = remember { mutableStateListOf<Int>() }
     var textBuffer by remember { mutableStateOf("") }
     
@@ -595,14 +617,23 @@ fun RemoteSessionScreen(
         activeModifiers.clear()
     }
 
-    fun toggleKeyboard() {
-        isKeyboardActive = !isKeyboardActive
-        if (isKeyboardActive) {
-            showSpecialKeys = true // auto-show special keys when typing
-            focusRequester.requestFocus()
-        } else {
+    fun toggleNormalKeyboard() {
+        if (isKeyboardActive || showSpecialKeys) {
+            isKeyboardActive = false
+            showSpecialKeys = false
+            userDismissedKeyboard = true
             focusManager.clearFocus()
+            keyboardController?.hide()
+            val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+            imm?.hideSoftInputFromWindow(activity.window.decorView.windowToken, 0)
             releaseAllRemoteKeys()
+        } else {
+            userDismissedKeyboard = false
+            isKeyboardActive = true
+            focusRequester.requestFocus()
+            keyboardController?.show()
+            val imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+            imm?.showSoftInput(activity.currentFocus ?: activity.window.decorView, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
         }
         showToolbar = false
     }
@@ -641,25 +672,11 @@ fun RemoteSessionScreen(
                     networkClient.sendKeyEvent(0x08, false)
                 }
             } else if (newStr.length > textBuffer.length) {
-                // Characters added
+                // Characters added via soft keyboard (supports all unicode, emojis, accents)
                 val diffStr = newStr.substring(textBuffer.length)
-                for (newChar in diffStr) {
-                    val vkCode = VkMapper.getVkCode(newChar)
-                    val needsShift = VkMapper.requiresShift(newChar)
-                    
-                    if (needsShift && !activeModifiers.contains(0x10)) {
-                        networkClient.sendKeyEvent(0x10, true) // Shift down
-                    }
-                    
-                    networkClient.sendKeyEvent(vkCode, true)
-                    networkClient.sendKeyEvent(vkCode, false)
-                    
-                    if (needsShift && !activeModifiers.contains(0x10)) {
-                        networkClient.sendKeyEvent(0x10, false) // Shift up
-                    }
-                }
+                networkClient.sendTextCommit(diffStr)
             }
-            textBuffer = newStr
+            textBuffer = if (newStr.length > 50) "" else newStr
         },
         keyboardOptions = KeyboardOptions(autoCorrect = false),
         modifier = Modifier
@@ -668,8 +685,7 @@ fun RemoteSessionScreen(
             .onFocusChanged { state ->
                 if (!state.isFocused && isKeyboardActive) {
                     isKeyboardActive = false
-                    showSpecialKeys = false
-                    isKeyboardClosingPhase = false
+                    userDismissedKeyboard = true
                 }
             }
             .onKeyEvent { keyEvent ->
@@ -826,24 +842,17 @@ fun RemoteSessionScreen(
                             touchHandler.updateTransform(newScale, clampedX, clampedY)
                         }
                     }
+                    touchHandler.onUserInteraction = {
+                        userDismissedKeyboard = false
+                    }
                     touchHandler.onTwoFingerSingleTap = {
                         activity.runOnUiThread {
-                            if (!isKeyboardActive) {
-                                isKeyboardActive = true
-                                showSpecialKeys = false
-                                isKeyboardClosingPhase = false
-                                focusRequester.requestFocus()
-                            } else if (!showSpecialKeys && !isKeyboardClosingPhase) {
-                                showSpecialKeys = true
-                            } else if (showSpecialKeys) {
-                                showSpecialKeys = false
-                                isKeyboardClosingPhase = true
-                            } else if (isKeyboardClosingPhase) {
-                                isKeyboardActive = false
-                                isKeyboardClosingPhase = false
-                                focusManager.clearFocus()
-                                releaseAllRemoteKeys()
-                            }
+                            toggleNormalKeyboard()
+                        }
+                    }
+                    touchHandler.onTwoFingerDoubleTap = {
+                        activity.runOnUiThread {
+                            toggleNormalKeyboard()
                         }
                     }
                     overlayView.tag = touchHandler
@@ -869,46 +878,127 @@ fun RemoteSessionScreen(
                 )
             }
 
-            // --- 4. FLOATING RESET TUBE BUTTON (WHEN ZOOMED IN) ---
-            androidx.compose.animation.AnimatedVisibility(
-                visible = viewportScale.value > 1.05f,
+            // --- 4. TOP-RIGHT FLOATING CONTROLS (RESET ZOOM & SPECIAL KEYS PILL BUTTON) ---
+            Row(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(end = 16.dp, top = 16.dp),
-                enter = fadeIn() + scaleIn(),
-                exit = fadeOut() + scaleOut()
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                // Reset Zoom Tube (Visible when zoomed in)
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = viewportScale.value > 1.05f,
+                    enter = fadeIn() + scaleIn(),
+                    exit = fadeOut() + scaleOut()
+                ) {
+                    Surface(
+                        onClick = {
+                            coroutineScope.launch {
+                                launch {
+                                    viewportScale.animateTo(
+                                        targetValue = 1f,
+                                        animationSpec = androidx.compose.animation.core.spring(
+                                            dampingRatio = androidx.compose.animation.core.Spring.DampingRatioMediumBouncy,
+                                            stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
+                                        )
+                                    )
+                                }
+                                launch {
+                                    viewportOffsetX.animateTo(
+                                        targetValue = 0f,
+                                        animationSpec = androidx.compose.animation.core.spring(
+                                            dampingRatio = androidx.compose.animation.core.Spring.DampingRatioMediumBouncy,
+                                            stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
+                                        )
+                                    )
+                                }
+                                launch {
+                                    viewportOffsetY.animateTo(
+                                        targetValue = 0f,
+                                        animationSpec = androidx.compose.animation.core.spring(
+                                            dampingRatio = androidx.compose.animation.core.Spring.DampingRatioMediumBouncy,
+                                            stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
+                                        )
+                                    )
+                                }
+                                currentTouchHandler?.updateTransform(1f, 0f, 0f)
+                            }
+                        },
+                        shape = RoundedCornerShape(32.dp),
+                        color = Color.Transparent,
+                        border = BorderStroke(1.dp, Brush.horizontalGradient(listOf(Color(0x80FFFFFF), Color(0x33FFFFFF)))),
+                        shadowElevation = 8.dp
+                    ) {
+                        Box(
+                            modifier = Modifier.background(
+                                Brush.horizontalGradient(
+                                    listOf(
+                                        Color(0xFF0052D4),
+                                        Color(0xFF0D6EFD),
+                                        Color(0xFF00B4D8)
+                                    )
+                                )
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(start = 5.dp, end = 12.dp, top = 5.dp, bottom = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // High-tech black circle dial with white 'X'
+                                Box(
+                                    modifier = Modifier
+                                        .size(24.dp)
+                                        .background(Color(0xFF0B0E14), CircleShape)
+                                        .border(BorderStroke(1.dp, Color(0x33FFFFFF)), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Close,
+                                        contentDescription = "Reset Zoom",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+
+                                Spacer(Modifier.width(8.dp))
+
+                                Text(
+                                    text = "Reset",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 0.4.sp
+                                )
+
+                                Spacer(Modifier.width(8.dp))
+
+                                // Futuristic Live Zoom Badge Pill
+                                Box(
+                                    modifier = Modifier
+                                        .background(Color(0x33000000), RoundedCornerShape(12.dp))
+                                        .border(BorderStroke(0.5.dp, Color(0x26FFFFFF)), RoundedCornerShape(12.dp))
+                                        .padding(horizontal = 7.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = String.format(java.util.Locale.US, "%.1fx", viewportScale.value),
+                                        color = Color(0xFFE0F7FA),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        letterSpacing = 0.2.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Floating Special Keys Pill Button (matches Zoom Reset button style)
                 Surface(
                     onClick = {
-                        coroutineScope.launch {
-                            launch {
-                                viewportScale.animateTo(
-                                    targetValue = 1f,
-                                    animationSpec = androidx.compose.animation.core.spring(
-                                        dampingRatio = androidx.compose.animation.core.Spring.DampingRatioMediumBouncy,
-                                        stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
-                                    )
-                                )
-                            }
-                            launch {
-                                viewportOffsetX.animateTo(
-                                    targetValue = 0f,
-                                    animationSpec = androidx.compose.animation.core.spring(
-                                        dampingRatio = androidx.compose.animation.core.Spring.DampingRatioMediumBouncy,
-                                        stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
-                                    )
-                                )
-                            }
-                            launch {
-                                viewportOffsetY.animateTo(
-                                    targetValue = 0f,
-                                    animationSpec = androidx.compose.animation.core.spring(
-                                        dampingRatio = androidx.compose.animation.core.Spring.DampingRatioMediumBouncy,
-                                        stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
-                                    )
-                                )
-                            }
-                            currentTouchHandler?.updateTransform(1f, 0f, 0f)
+                        showSpecialKeys = !showSpecialKeys
+                        if (!showSpecialKeys) {
+                            releaseAllRemoteKeys()
                         }
                     },
                     shape = RoundedCornerShape(32.dp),
@@ -918,20 +1008,28 @@ fun RemoteSessionScreen(
                 ) {
                     Box(
                         modifier = Modifier.background(
-                            Brush.horizontalGradient(
-                                listOf(
-                                    Color(0xFF0052D4),
-                                    Color(0xFF0D6EFD),
-                                    Color(0xFF00B4D8)
+                            if (showSpecialKeys) {
+                                Brush.horizontalGradient(
+                                    listOf(
+                                        Color(0xFF0052D4),
+                                        Color(0xFF0D6EFD),
+                                        Color(0xFF00B4D8)
+                                    )
                                 )
-                            )
+                            } else {
+                                Brush.horizontalGradient(
+                                    listOf(
+                                        Color(0xD91E1E1E),
+                                        Color(0xD92A2A2A)
+                                    )
+                                )
+                            }
                         )
                     ) {
                         Row(
                             modifier = Modifier.padding(start = 5.dp, end = 12.dp, top = 5.dp, bottom = 5.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // High-tech black circle dial with white 'X'
                             Box(
                                 modifier = Modifier
                                     .size(24.dp)
@@ -940,9 +1038,9 @@ fun RemoteSessionScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
-                                    imageVector = Icons.Filled.Close,
-                                    contentDescription = "Reset Zoom",
-                                    tint = Color.White,
+                                    imageVector = Icons.Filled.Menu,
+                                    contentDescription = "Special Keys",
+                                    tint = if (showSpecialKeys) Color(0xFF00E5FF) else Color.White,
                                     modifier = Modifier.size(13.dp)
                                 )
                             }
@@ -950,7 +1048,7 @@ fun RemoteSessionScreen(
                             Spacer(Modifier.width(8.dp))
 
                             Text(
-                                text = "Reset",
+                                text = "Special Keys",
                                 color = Color.White,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold,
@@ -959,16 +1057,22 @@ fun RemoteSessionScreen(
 
                             Spacer(Modifier.width(8.dp))
 
-                            // Futuristic Live Zoom Badge Pill
+                            // Futuristic Live ON/OFF Badge Pill
                             Box(
                                 modifier = Modifier
-                                    .background(Color(0x33000000), RoundedCornerShape(12.dp))
-                                    .border(BorderStroke(0.5.dp, Color(0x26FFFFFF)), RoundedCornerShape(12.dp))
+                                    .background(
+                                        if (showSpecialKeys) Color(0x3300E5FF) else Color(0x33000000),
+                                        RoundedCornerShape(12.dp)
+                                    )
+                                    .border(
+                                        BorderStroke(0.5.dp, if (showSpecialKeys) Color(0x8000E5FF) else Color(0x26FFFFFF)),
+                                        RoundedCornerShape(12.dp)
+                                    )
                                     .padding(horizontal = 7.dp, vertical = 2.dp)
                             ) {
                                 Text(
-                                    text = String.format(java.util.Locale.US, "%.1fx", viewportScale.value),
-                                    color = Color(0xFFE0F7FA),
+                                    text = if (showSpecialKeys) "ON" else "OFF",
+                                    color = if (showSpecialKeys) Color(0xFF00E5FF) else Color(0xFFB0BEC5),
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     letterSpacing = 0.2.sp
@@ -998,7 +1102,7 @@ fun RemoteSessionScreen(
                         icon = Icons.Filled.Edit,
                         label = "Keyboard",
                         tint = if (isKeyboardActive) BrandBlue else TextPrimary,
-                        onClick = { toggleKeyboard() }
+                        onClick = { toggleNormalKeyboard() }
                     )
                     
                     // Special Keys Toggle
@@ -1008,6 +1112,9 @@ fun RemoteSessionScreen(
                         tint = if (showSpecialKeys) BrandBlue else TextPrimary,
                         onClick = { 
                             showSpecialKeys = !showSpecialKeys 
+                            if (!showSpecialKeys) {
+                                releaseAllRemoteKeys()
+                            }
                             showToolbar = false
                         }
                     )

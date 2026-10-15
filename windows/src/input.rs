@@ -1,9 +1,9 @@
 use std::mem::size_of;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
-    MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT,
+    KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
+    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
+    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT,
 };
 
 pub fn handle_input_payload(payload: &[u8]) {
@@ -49,6 +49,14 @@ pub fn handle_input_payload(payload: &[u8]) {
                 let vk_code = payload[1] as u16;
                 let down = payload[2] == 1;
                 inject_key(vk_code, down);
+            }
+        }
+        0x05 => {
+            // Unicode Text Commit (Gboard / Soft Keyboard text injection)
+            if payload.len() > 1 {
+                if let Ok(text) = std::str::from_utf8(&payload[1..]) {
+                    inject_unicode_text(text);
+                }
             }
         }
         0x10 => {
@@ -185,5 +193,114 @@ fn inject_key(vk_code: u16, down: bool) {
     };
     unsafe {
         let _ = SendInput(&[input], size_of::<INPUT>() as i32);
+    }
+}
+
+pub fn inject_unicode_text(text: &str) {
+    let mut inputs = Vec::new();
+    for ch in text.encode_utf16() {
+        let mut input_down = INPUT::default();
+        input_down.r#type = INPUT_KEYBOARD;
+        input_down.Anonymous.ki = KEYBDINPUT {
+            wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(0),
+            wScan: ch,
+            dwFlags: KEYEVENTF_UNICODE,
+            time: 0,
+            dwExtraInfo: 0,
+        };
+        let mut input_up = input_down;
+        input_up.Anonymous.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+        inputs.push(input_down);
+        inputs.push(input_up);
+    }
+    if !inputs.is_empty() {
+        unsafe {
+            let _ = SendInput(&inputs, size_of::<INPUT>() as i32);
+        }
+    }
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn OpenDesktopW(lpszDesktop: windows::core::PCWSTR, dwFlags: u32, fInherit: i32, dwDesiredAccess: u32) -> isize;
+    fn SetThreadDesktop(hDesktop: isize) -> i32;
+}
+
+/// Instantaneous, non-blocking Win32 caret check (<0.01ms memory read)
+pub fn check_win32_caret() -> bool {
+    unsafe {
+        let fg_hwnd = windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
+        if fg_hwnd.0.is_null() {
+            return false;
+        }
+        let mut pid = 0u32;
+        let thread_id = windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(fg_hwnd, Some(&mut pid));
+        if thread_id == 0 || pid == windows::Win32::System::Threading::GetCurrentProcessId() {
+            return false;
+        }
+
+        let mut gti = windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO {
+            cbSize: std::mem::size_of::<windows::Win32::UI::WindowsAndMessaging::GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+
+        if windows::Win32::UI::WindowsAndMessaging::GetGUIThreadInfo(thread_id, &mut gti).is_ok() {
+            return !gti.hwndCaret.0.is_null() || (gti.flags.0 & 0x00000001) != 0;
+        }
+    }
+    false
+}
+
+/// Event-driven check when user clicks: checks if an editable text/typing element is focused or clicked
+pub fn is_text_input_focused() -> bool {
+    // 1. Fast path: check native Win32 caret (<0.01ms memory read)
+    if check_win32_caret() {
+        return true;
+    }
+
+    // 2. UI Automation check for modern browsers, Electron, chat apps, Windows 11 apps
+    unsafe {
+        let desk = OpenDesktopW(windows::core::w!("Default"), 0, 0, 0x01FF);
+        if desk != 0 {
+            SetThreadDesktop(desk);
+        }
+
+        let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
+
+        let mut is_text = false;
+        if let Ok(automation) = windows::Win32::System::Com::CoCreateInstance::<_, windows::Win32::UI::Accessibility::IUIAutomation>(
+            &windows::Win32::UI::Accessibility::CUIAutomation,
+            None,
+            windows::Win32::System::Com::CLSCTX_INPROC_SERVER,
+        ) {
+            // Check focused element first
+            if let Ok(elem) = automation.GetFocusedElement() {
+                let ctype = elem.CurrentControlType().unwrap_or_default();
+                if ctype == windows::Win32::UI::Accessibility::UIA_EditControlTypeId
+                    || ctype == windows::Win32::UI::Accessibility::UIA_DocumentControlTypeId
+                    || ctype == windows::Win32::UI::Accessibility::UIA_ComboBoxControlTypeId
+                {
+                    is_text = true;
+                }
+            }
+
+            // Also check element at current cursor position if not yet detected
+            if !is_text {
+                let mut pt = windows::Win32::Foundation::POINT::default();
+                let _ = windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt);
+                if let Ok(pt_elem) = automation.ElementFromPoint(pt) {
+                    let pt_ctype = pt_elem.CurrentControlType().unwrap_or_default();
+                    if pt_ctype == windows::Win32::UI::Accessibility::UIA_EditControlTypeId
+                        || pt_ctype == windows::Win32::UI::Accessibility::UIA_DocumentControlTypeId
+                        || pt_ctype == windows::Win32::UI::Accessibility::UIA_ComboBoxControlTypeId
+                    {
+                        is_text = true;
+                    }
+                }
+            }
+        }
+
+        windows::Win32::System::Com::CoUninitialize();
+        is_text
     }
 }

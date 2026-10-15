@@ -505,7 +505,7 @@ pub fn start_capture_loop() -> Result<()> {
         let idr_throttle_ms = if is_tailscale {
             (250u64).max((rtt as u64) * 2).min(800)
         } else {
-            10u64
+            (120u64).max((rtt as u64) * 2).min(400)
         };
 
         if FORCE_IDR.swap(false, std::sync::atomic::Ordering::Relaxed) {

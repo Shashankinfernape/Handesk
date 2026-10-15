@@ -34,6 +34,7 @@ class NativeClient {
 
     var onStatusUpdateListener: ((Int, Int) -> Unit)? = null
     var onResolutionUpdateListener: ((Int, Int) -> Unit)? = null
+    var onTextFocusUpdateListener: ((Boolean, Int, Int, Int, Int) -> Unit)? = null
 
     // Called from C++ JNI when an 0x09 Status packet arrives
     fun onStatusUpdate(fps: Int, bitrate: Int) {
@@ -43,6 +44,11 @@ class NativeClient {
     // Called from C++ JNI when an 0x0D Resolution packet arrives
     fun onResolutionUpdate(width: Int, height: Int) {
         onResolutionUpdateListener?.invoke(width, height)
+    }
+
+    // Called from C++ JNI when an 0x0E Text Focus packet arrives
+    fun onTextFocusUpdate(focused: Boolean, x: Int, y: Int, w: Int, h: Int) {
+        onTextFocusUpdateListener?.invoke(focused, x, y, w, h)
     }
 
     // Called from C++ JNI when an 0x08 Opus packet arrives
@@ -82,7 +88,7 @@ class NativeClient {
 
     private fun sendInputPacket(payload: ByteArray) {
         if (!isConnected) return
-        val fullPacket = ByteArray(15)
+        val fullPacket = ByteArray(5 + payload.size)
         fullPacket[0] = 'D'.code.toByte()
         fullPacket[1] = 'L'.code.toByte()
         fullPacket[2] = 'P'.code.toByte()
@@ -90,6 +96,14 @@ class NativeClient {
         fullPacket[4] = 0x07
         System.arraycopy(payload, 0, fullPacket, 5, payload.size)
         sendInputNative(fullPacket)
+    }
+
+    fun sendTextCommit(text: String) {
+        val textBytes = text.toByteArray(Charsets.UTF_8)
+        val payload = ByteArray(1 + textBytes.size)
+        payload[0] = 0x05 // Sub-type 0x05: Unicode Text Commit
+        System.arraycopy(textBytes, 0, payload, 1, textBytes.size)
+        sendInputPacket(payload)
     }
 
     fun sendMouseMove(normX: Int, normY: Int) {

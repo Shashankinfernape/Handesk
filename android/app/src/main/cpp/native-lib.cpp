@@ -28,6 +28,7 @@ jobject g_obj = nullptr;
 jmethodID g_onAudioData_method = nullptr;
 jmethodID g_onStatusUpdate_method = nullptr;
 jmethodID g_onResolutionUpdate_method = nullptr;
+jmethodID g_onTextFocusUpdate_method = nullptr;
 
 static int32_t g_last_notified_w = 0;
 static int32_t g_last_notified_h = 0;
@@ -401,6 +402,13 @@ void network_loop(std::string ip) {
                     LOGI("Handesk host desktop resolution packet: %ux%u", w, h);
                     notify_resolution_change((int32_t)w, (int32_t)h);
                 }
+                // ── 0x0E: Text/Caret Focus Update ───────────────────────────
+                else if (type == 0x0E && len >= 6) {
+                    bool focused = buf[5] != 0;
+                    if (attached && g_obj && g_onTextFocusUpdate_method) {
+                        env->CallVoidMethod(g_obj, g_onTextFocusUpdate_method, (jboolean)focused, 0, 0, 0, 0);
+                    }
+                }
             }
         }
 
@@ -446,6 +454,7 @@ Java_com_directlink_client_NativeClient_connectNative(JNIEnv* env, jobject thiz,
     g_onAudioData_method = env->GetMethodID(clazz, "onAudioData", "([B)V");
     g_onStatusUpdate_method = env->GetMethodID(clazz, "onStatusUpdate", "(II)V");
     g_onResolutionUpdate_method = env->GetMethodID(clazz, "onResolutionUpdate", "(II)V");
+    g_onTextFocusUpdate_method = env->GetMethodID(clazz, "onTextFocusUpdate", "(ZIIII)V");
     env->DeleteLocalRef(clazz);
     std::string ip(ip_cstr);
     env->ReleaseStringUTFChars(ip_jstr, ip_cstr);

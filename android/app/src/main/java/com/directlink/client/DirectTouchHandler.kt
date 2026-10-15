@@ -26,6 +26,7 @@ class DirectTouchHandler(
     var currentMode: GestureMode = GestureMode.HANDESK
     var onTwoFingerSingleTap: (() -> Unit)? = null
     var onTwoFingerDoubleTap: (() -> Unit)? = null
+    var onUserInteraction: (() -> Unit)? = null
 
     // Callback reporting normalized cursor coordinates (0f..1f) for UI cursor overlay in MOUSE mode
     var onCursorPositionChanged: ((normX: Float, normY: Float) -> Unit)? = null
@@ -389,6 +390,9 @@ class DirectTouchHandler(
     // MAIN TOUCH DISPATCHER
     // =========================================================================
     override fun onTouch(v: View, event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            onUserInteraction?.invoke()
+        }
         if (event.pointerCount >= 3 || isThreeFingerGestureActive) {
             return handleThreeFingerGesture(event)
         }

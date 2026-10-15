@@ -21,6 +21,7 @@ pub const PACKET_REQUEST_IDR: u8 = 0x0A;
 pub const PACKET_PING: u8 = 0x0B;
 pub const PACKET_PONG: u8 = 0x0C;
 pub const PACKET_RESOLUTION: u8 = 0x0D;
+pub const PACKET_TEXT_FOCUS: u8 = 0x0E;
 
 pub static SMOOTHED_RTT_MS: AtomicU32 = AtomicU32::new(0);
 pub static VIDEO_SOCKET: OnceLock<std::net::UdpSocket> = OnceLock::new();
@@ -499,11 +500,27 @@ pub async fn start_udp_server() -> Result<()> {
                 }
             }
             PACKET_INPUT => {
+                let is_click_release = len >= 8 && buf[5] == 0x02 && buf[7] == 0;
                 crate::input::handle_input_payload(&buf[5..len]);
                 if len >= 7 && (buf[5] == 0x10 || buf[5] == 0x11) {
                     let cur_fps = crate::capture::TARGET_FPS.load(Ordering::Relaxed);
                     let cur_bitrate = crate::capture::TARGET_BITRATE.load(Ordering::Relaxed);
                     broadcast_settings(cur_fps, cur_bitrate);
+                }
+                if is_click_release {
+                    let sock_ctrl = socket.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+                        let is_text = tokio::task::spawn_blocking(|| {
+                            crate::input::is_text_input_focused()
+                        }).await.unwrap_or(false);
+
+                        let mut pkt = [0u8; 6];
+                        pkt[0..4].copy_from_slice(&MAGIC_BYTES);
+                        pkt[4] = PACKET_TEXT_FOCUS;
+                        pkt[5] = if is_text { 1 } else { 0 };
+                        let _ = sock_ctrl.send_to(&pkt, remote_addr).await;
+                    });
                 }
             }
             PACKET_REQUEST_IDR => {
