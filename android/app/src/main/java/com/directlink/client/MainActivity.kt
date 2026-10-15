@@ -878,13 +878,11 @@ fun RemoteSessionScreen(
                 )
             }
 
-            // --- 4. TOP-RIGHT FLOATING CONTROLS (RESET ZOOM & SPECIAL KEYS PILL BUTTON) ---
-            Row(
+            // --- 4. TOP-RIGHT FLOATING CONTROLS (RESET ZOOM) ---
+            Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(end = 16.dp, top = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(end = 16.dp, top = 16.dp)
             ) {
                 // Reset Zoom Tube (Visible when zoomed in)
                 androidx.compose.animation.AnimatedVisibility(
@@ -992,56 +990,6 @@ fun RemoteSessionScreen(
                         }
                     }
                 }
-
-                // Compact Floating Special Keys Pill Button
-                Surface(
-                    onClick = {
-                        showSpecialKeys = !showSpecialKeys
-                        if (!showSpecialKeys) {
-                            releaseAllRemoteKeys()
-                        }
-                    },
-                    shape = RoundedCornerShape(24.dp),
-                    color = Color.Transparent,
-                    border = BorderStroke(
-                        1.dp,
-                        if (showSpecialKeys) Brush.horizontalGradient(listOf(Color(0xFF00E5FF), Color(0xFF0D6EFD)))
-                        else Brush.horizontalGradient(listOf(Color(0x66FFFFFF), Color(0x22FFFFFF)))
-                    ),
-                    shadowElevation = 6.dp
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .background(
-                                if (showSpecialKeys) {
-                                    Brush.horizontalGradient(
-                                        listOf(
-                                            Color(0xFF0052D4),
-                                            Color(0xFF0D6EFD),
-                                            Color(0xFF00B4D8)
-                                        )
-                                    )
-                                } else {
-                                    Brush.horizontalGradient(
-                                        listOf(
-                                            Color(0xD91E1E1E),
-                                            Color(0xD92A2A2A)
-                                        )
-                                    )
-                                }
-                            )
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "Special Keys",
-                            color = if (showSpecialKeys) Color.White else Color(0xFFE0E0E0),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.3.sp
-                        )
-                    }
-                }
             }
 
             // --- INTERACTIVE TOOLBAR ---
@@ -1066,19 +1014,55 @@ fun RemoteSessionScreen(
                         onClick = { toggleNormalKeyboard() }
                     )
                     
-                    // Special Keys Toggle
-                    ToolbarIconButton(
-                        icon = Icons.Filled.Menu,
-                        label = "Special Keys",
-                        tint = if (showSpecialKeys) BrandBlue else TextPrimary,
+                    // Special Keys Toggle (Compact pill button in toolbar panel)
+                    Surface(
                         onClick = { 
                             showSpecialKeys = !showSpecialKeys 
                             if (!showSpecialKeys) {
                                 releaseAllRemoteKeys()
                             }
                             showToolbar = false
+                        },
+                        shape = RoundedCornerShape(20.dp),
+                        color = Color.Transparent,
+                        border = BorderStroke(
+                            1.dp,
+                            if (showSpecialKeys) Brush.horizontalGradient(listOf(Color(0xFF00E5FF), Color(0xFF0D6EFD)))
+                            else Brush.horizontalGradient(listOf(Color(0x55FFFFFF), Color(0x22FFFFFF)))
+                        )
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .background(
+                                    if (showSpecialKeys) {
+                                        Brush.horizontalGradient(
+                                            listOf(
+                                                Color(0xFF0052D4),
+                                                Color(0xFF0D6EFD),
+                                                Color(0xFF00B4D8)
+                                            )
+                                        )
+                                    } else {
+                                        Brush.horizontalGradient(
+                                            listOf(
+                                                Color(0x2AFFFFFF),
+                                                Color(0x14FFFFFF)
+                                            )
+                                        )
+                                    }
+                                )
+                                .padding(horizontal = 12.dp, vertical = 7.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Special Keys",
+                                color = if (showSpecialKeys) Color.White else Color(0xFFE0E0E0),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 0.3.sp
+                            )
                         }
-                    )
+                    }
                     
                     // Orientation Toggle
                     ToolbarIconButton(
