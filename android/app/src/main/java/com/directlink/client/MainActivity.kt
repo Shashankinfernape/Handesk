@@ -74,7 +74,7 @@ private val TextPrimary = Color(0xFFE0E0E0)
 private val TextSecondary = Color(0xFFA0A0A0)
 private val ErrorRed = Color(0xFFCF6679)
 private val SuccessGreen = Color(0xFF34C759)
-private const val PHANTOM_KEYBOARD_BUFFER = "                              " // 30 spaces for bulletproof backspace detection
+private val PHANTOM_KEYBOARD_BUFFER = " ".repeat(200) // 200 spaces for continuous long-press backspace repeat
 
 class MainActivity : ComponentActivity() {
     private val networkClient = NativeClient()
@@ -227,7 +227,7 @@ fun HandeskApp(networkClient: NativeClient, activity: Activity) {
                             }
                         }
                     })
-                    2 -> SettingsTab()
+                    2 -> SettingsTab(activity)
                 }
             }
         }
@@ -452,9 +452,28 @@ fun RecentTab(activity: Activity, onConnect: (String) -> Unit) {
 }
 
 @Composable
-fun SettingsTab() {
+fun SettingsTab(activity: Activity) {
+    val prefs = remember { activity.getSharedPreferences("HandeskPrefs", Context.MODE_PRIVATE) }
+    var selectedCodec by remember {
+        mutableStateOf(prefs.getString("selected_video_codec", "DESKRT") ?: "DESKRT")
+    }
+    var showCodecDialog by remember { mutableStateOf(false) }
+
     Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
         Text("Settings", color = TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(24.dp))
+
+        SettingsGroup("Video & Codec") {
+            val codecLabel = if (selectedCodec == "DESKRT") "DeskRT (AnyDesk 32×32 Tile)" else "Hardware H.265 (HEVC)"
+            val codecDesc = if (selectedCodec == "DESKRT") "Tile differential • 0 bytes on idle" else "GPU Hardware Accelerated • 60-144 FPS"
+            SettingsItem(
+                icon = Icons.Rounded.Tv,
+                title = "Video Codec",
+                subtitle = "$codecLabel • $codecDesc",
+                onClick = { showCodecDialog = true }
+            )
+        }
+
         Spacer(Modifier.height(24.dp))
 
         SettingsGroup("General") {
@@ -475,6 +494,20 @@ fun SettingsTab() {
             SettingsItem(Icons.Filled.Share, "Direct Connection", "Enabled")
         }
     }
+
+    if (showCodecDialog) {
+        CodecSelectionDialog(
+            currentCodec = selectedCodec,
+            onSelect = { codec ->
+                selectedCodec = codec
+                prefs.edit().putString("selected_video_codec", codec).apply()
+                showCodecDialog = false
+                val name = if (codec == "DESKRT") "DeskRT (AnyDesk Tile)" else "Hardware H.265 (HEVC)"
+                Toast.makeText(activity, "Default video codec set to $name", Toast.LENGTH_SHORT).show()
+            },
+            onDismiss = { showCodecDialog = false }
+        )
+    }
 }
 
 @Composable
@@ -494,9 +527,9 @@ fun SettingsGroup(title: String, content: @Composable () -> Unit) {
 }
 
 @Composable
-fun SettingsItem(icon: ImageVector, title: String, subtitle: String) {
+fun SettingsItem(icon: ImageVector, title: String, subtitle: String, onClick: () -> Unit = {}) {
     Row(
-        modifier = Modifier.fillMaxWidth().clickable { }.padding(16.dp),
+        modifier = Modifier.fillMaxWidth().clickable { onClick() }.padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(icon, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(24.dp))
@@ -570,6 +603,10 @@ fun RemoteSessionScreen(
             if (old.contains("last_desktop_h")) p.edit().putInt("last_desktop_h", old.getInt("last_desktop_h", 900)).apply()
         }
     }
+    var activeCodec by remember {
+        mutableStateOf(prefs.getString("selected_video_codec", "DESKRT") ?: "DESKRT")
+    }
+    var expandedCodecMenu by remember { mutableStateOf(false) }
     var isKeyboardActive by remember { mutableStateOf(false) }
     var showSpecialKeys by remember { mutableStateOf(false) }
     var userDismissedKeyboard by remember { mutableStateOf(true) }
@@ -611,6 +648,18 @@ fun RemoteSessionScreen(
         }
     }
 
+    val activeModifiers = remember { mutableStateListOf<Int>() }
+    var textFieldState by remember {
+        mutableStateOf(
+            TextFieldValue(
+                text = PHANTOM_KEYBOARD_BUFFER,
+                selection = TextRange(PHANTOM_KEYBOARD_BUFFER.length)
+            )
+        )
+    }
+    var lastSentText by remember { mutableStateOf("") }
+    var lastKeyEventBackspaceTime by remember { mutableLongStateOf(0L) }
+
     LaunchedEffect(networkClient, isAutoKeyboardEnabled) {
         networkClient.onTextFocusUpdateListener = { focused, _, _, _, _ ->
             if (isAutoKeyboardEnabled) {
@@ -618,6 +667,11 @@ fun RemoteSessionScreen(
                     if (focused) {
                         if (!isKeyboardActive) {
                             userDismissedKeyboard = false
+                            lastSentText = ""
+                            textFieldState = TextFieldValue(
+                                text = PHANTOM_KEYBOARD_BUFFER,
+                                selection = TextRange(PHANTOM_KEYBOARD_BUFFER.length)
+                            )
                             isKeyboardActive = true
                             focusRequester.requestFocus()
                             keyboardController?.show()
@@ -630,17 +684,7 @@ fun RemoteSessionScreen(
         }
     }
 
-    val activeModifiers = remember { mutableStateListOf<Int>() }
-    var textFieldState by remember {
-        mutableStateOf(
-            TextFieldValue(
-                text = PHANTOM_KEYBOARD_BUFFER,
-                selection = TextRange(PHANTOM_KEYBOARD_BUFFER.length)
-            )
-        )
-    }
-    var lastSentText by remember { mutableStateOf("") }
-    var lastKeyEventBackspaceTime by remember { mutableLongStateOf(0L) }
+
     
     val viewportScale = remember { androidx.compose.animation.core.Animatable(1f) }
     val viewportOffsetX = remember { androidx.compose.animation.core.Animatable(0f) }
@@ -708,22 +752,35 @@ fun RemoteSessionScreen(
 
             val currentFullText = newVal.text
 
-            // 1. Backspace when buffer is below phantom threshold (empty buffer deletion)
-            if (currentFullText.length < PHANTOM_KEYBOARD_BUFFER.length) {
-                val now = System.currentTimeMillis()
-                if (now - lastKeyEventBackspaceTime > 50) {
-                    val diff = PHANTOM_KEYBOARD_BUFFER.length - currentFullText.length
-                    repeat(diff) {
-                        networkClient.sendKeyEvent(0x08, true)
-                        networkClient.sendKeyEvent(0x08, false)
+            val oldFullText = textFieldState.text
+
+            // 1. Backspace when deleting from the phantom space buffer
+            if (currentFullText.all { it == ' ' }) {
+                if (currentFullText.length < oldFullText.length) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastKeyEventBackspaceTime > 40) {
+                        val diff = oldFullText.length - currentFullText.length
+                        repeat(diff) {
+                            networkClient.sendKeyEvent(0x08, true)
+                            networkClient.sendKeyEvent(0x08, false)
+                        }
                     }
+                    lastSentText = ""
+                    if (currentFullText.length < 30) {
+                        // Replenish buffer only when running low so Gboard never runs out
+                        textFieldState = TextFieldValue(
+                            text = PHANTOM_KEYBOARD_BUFFER,
+                            selection = TextRange(PHANTOM_KEYBOARD_BUFFER.length)
+                        )
+                    } else {
+                        // Retain newVal so Gboard's long-press repeat accelerator continues smoothly!
+                        textFieldState = newVal
+                    }
+                    return@BasicTextField
+                } else if (currentFullText.length == oldFullText.length) {
+                    textFieldState = newVal
+                    return@BasicTextField
                 }
-                lastSentText = ""
-                textFieldState = TextFieldValue(
-                    text = PHANTOM_KEYBOARD_BUFFER,
-                    selection = TextRange(PHANTOM_KEYBOARD_BUFFER.length)
-                )
-                return@BasicTextField
             }
 
             // Extract the local text typed after the phantom prefix
@@ -875,8 +932,12 @@ fun RemoteSessionScreen(
                     val isDown = keyEvent.type == KeyEventType.KeyDown
                     val vkCode = when (keyEvent.key) {
                         Key.Backspace -> {
-                            if (isDown) lastKeyEventBackspaceTime = System.currentTimeMillis()
-                            0x08
+                            if (isDown) {
+                                lastKeyEventBackspaceTime = System.currentTimeMillis()
+                                networkClient.sendKeyEvent(0x08, true)
+                                networkClient.sendKeyEvent(0x08, false)
+                            }
+                            0
                         }
                         Key.Enter, Key.NumPadEnter -> 0x0D
                         Key.Spacebar -> 0x20
@@ -887,6 +948,9 @@ fun RemoteSessionScreen(
                         Key.DirectionLeft -> 0x25
                         Key.DirectionRight -> 0x27
                         else -> 0
+                    }
+                    if (keyEvent.key == Key.Backspace) {
+                        return@onKeyEvent true
                     }
                     if (vkCode != 0) {
                         networkClient.sendKeyEvent(vkCode, isDown)
@@ -1583,6 +1647,79 @@ fun RemoteSessionScreen(
                         }
                     )
 
+                    // Video Codec Selector (H.265 vs DeskRT)
+                    Box {
+                        ToolbarIconButton(
+                            icon = Icons.Rounded.Tv,
+                            label = if (activeCodec == "DESKRT") "DeskRT" else "H.265",
+                            tint = if (activeCodec == "DESKRT") SuccessGreen else BrandBlue,
+                            onClick = { expandedCodecMenu = true }
+                        )
+
+                        DropdownMenu(
+                            expanded = expandedCodecMenu,
+                            onDismissRequest = { expandedCodecMenu = false },
+                            modifier = Modifier.background(SurfaceDark).width(250.dp)
+                        ) {
+                            DropdownMenuItem(
+                                text = { 
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (activeCodec == "HEVC") {
+                                            Icon(Icons.Rounded.Check, contentDescription = null, tint = BrandBlue, modifier = Modifier.size(18.dp))
+                                        } else {
+                                            Spacer(Modifier.width(18.dp))
+                                        }
+                                        Spacer(Modifier.width(12.dp))
+                                        Column {
+                                            Text("Hardware H.265 (HEVC)", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                            Text("GPU Accelerated • 60-144 FPS", color = TextSecondary, fontSize = 11.sp)
+                                        }
+                                    }
+                                },
+                                onClick = {
+                                    activeCodec = "HEVC"
+                                    prefs.edit().putString("selected_video_codec", "HEVC").apply()
+                                    expandedCodecMenu = false
+                                    showToolbar = false
+                                    Toast.makeText(activity, "Codec: Hardware H.265 (HEVC)", Toast.LENGTH_SHORT).show()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { 
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (activeCodec == "DESKRT") {
+                                            Icon(Icons.Rounded.Check, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(18.dp))
+                                        } else {
+                                            Spacer(Modifier.width(18.dp))
+                                        }
+                                        Spacer(Modifier.width(12.dp))
+                                        Column {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text("DeskRT (AnyDesk Tile)", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                                Spacer(Modifier.width(6.dp))
+                                                Box(
+                                                    modifier = Modifier
+                                                        .background(SuccessGreen.copy(alpha = 0.2f), RoundedCornerShape(4.dp))
+                                                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                                                ) {
+                                                    Text("NEW", color = SuccessGreen, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                                }
+                                            }
+                                            Text("32×32 Tiles • 0 bytes on idle", color = SuccessGreen, fontSize = 11.sp)
+                                        }
+                                    }
+                                },
+                                onClick = {
+                                    activeCodec = "DESKRT"
+                                    prefs.edit().putString("selected_video_codec", "DESKRT").apply()
+                                    expandedCodecMenu = false
+                                    showToolbar = false
+                                    Toast.makeText(activity, "Codec: DeskRT (AnyDesk Tile Differential)", Toast.LENGTH_SHORT).show()
+                                }
+                            )
+                        }
+                    }
+
                     // Divider
                     Box(modifier = Modifier.height(24.dp).width(1.dp).background(SurfaceVariantDark))
                     
@@ -1772,3 +1909,95 @@ private fun AndroidSelectionDivider() {
             .background(Color(0x2EFFFFFF))
     )
 }
+
+@Composable
+fun CodecSelectionDialog(
+    currentCodec: String,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = SurfaceDark,
+        title = {
+            Text("Select Video Codec", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                // Option 1: Hardware H.265 (HEVC)
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelect("HEVC") },
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (currentCodec == "HEVC") SurfaceVariantDark else DarkBg
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    border = if (currentCodec == "HEVC") BorderStroke(1.5.dp, BrandBlue) else null
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = currentCodec == "HEVC",
+                            onClick = { onSelect("HEVC") },
+                            colors = RadioButtonDefaults.colors(selectedColor = BrandBlue)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column {
+                            Text("Hardware H.265 (HEVC)", color = TextPrimary, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.height(2.dp))
+                            Text("GPU hardware accelerated (NVENC / Intel QuickSync / AMD AMF). Ultra-low latency for gaming and fluid motion.", color = TextSecondary, fontSize = 11.5.sp)
+                        }
+                    }
+                }
+
+                // Option 2: DeskRT (AnyDesk Tile Differential)
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelect("DESKRT") },
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (currentCodec == "DESKRT") SurfaceVariantDark else DarkBg
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    border = if (currentCodec == "DESKRT") BorderStroke(1.5.dp, SuccessGreen) else null
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = currentCodec == "DESKRT",
+                            onClick = { onSelect("DESKRT") },
+                            colors = RadioButtonDefaults.colors(selectedColor = SuccessGreen)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("DeskRT (AnyDesk Engine)", color = TextPrimary, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold)
+                                Spacer(Modifier.width(6.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .background(SuccessGreen.copy(alpha = 0.2f), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                                ) {
+                                    Text("NEW", color = SuccessGreen, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Spacer(Modifier.height(2.dp))
+                            Text("32×32 Tile differential encoding. Transmits 0 bytes on static screens. Razor-sharp text and lowest CPU/battery usage.", color = TextSecondary, fontSize = 11.5.sp)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextSecondary)
+            }
+        }
+    )
+}
+

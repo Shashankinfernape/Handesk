@@ -16,25 +16,22 @@ static RUNTIME: Mutex<Option<tokio::runtime::Runtime>> = Mutex::new(None);
 
 #[no_mangle]
 pub extern "C" fn start_handesk_backend() {
-    start_directlink_backend();
-}
-
-#[no_mangle]
-pub extern "C" fn start_directlink_backend() {
     init_logger();
     let mut rt_lock = RUNTIME.lock().unwrap();
     if rt_lock.is_some() {
-        info!("Backend already running.");
+        info!("Handesk backend already running.");
         return;
     }
 
     unsafe {
         let _ = windows::Win32::System::Threading::SetPriorityClass(
             windows::Win32::System::Threading::GetCurrentProcess(),
-            windows::Win32::System::Threading::REALTIME_PRIORITY_CLASS,
+            windows::Win32::System::Threading::HIGH_PRIORITY_CLASS,
         );
         windows::Win32::Media::timeBeginPeriod(1);
     }
+
+    capture::load_saved_settings();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -52,10 +49,10 @@ pub extern "C" fn start_directlink_backend() {
 }
 
 #[no_mangle]
-pub extern "C" fn stop_directlink_backend() {
+pub extern "C" fn stop_handesk_backend() {
     let mut rt_lock = RUNTIME.lock().unwrap();
     if let Some(rt) = rt_lock.take() {
-        info!("Stopping DirectLink Host...");
+        info!("Stopping Handesk Host...");
         rt.shutdown_background();
         info!("Backend stopped successfully.");
     }
@@ -92,11 +89,16 @@ pub extern "C" fn get_show_cursor_on_stream() -> bool {
 
 #[no_mangle]
 pub extern "C" fn init_logger() {
-    let file = std::fs::File::create("C:\\Users\\user\\Desktop\\Handesk-Windows-Newest\\directlink.log").unwrap();
-    let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_writer(std::sync::Arc::new(file))
-        .try_init();
+    if let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("C:\\Users\\user\\Desktop\\Handesk-Windows-Newest\\handesk.log")
+    {
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(std::sync::Arc::new(file))
+            .try_init();
+    }
 }
 
 #[no_mangle]

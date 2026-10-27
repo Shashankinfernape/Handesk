@@ -12,6 +12,7 @@ class QualitySettingsWidget extends StatefulWidget {
 class _QualitySettingsWidgetState extends State<QualitySettingsWidget> {
   int _selectedFps = 60;
   int _selectedBitrate = 12000000; // 1080p 60Hz default
+  String _selectedCodec = 'DESKRT';
   Timer? _timer;
 
   static const List<int> _availableFps = [30, 45, 60, 90, 120, 144];
@@ -98,6 +99,35 @@ class _QualitySettingsWidgetState extends State<QualitySettingsWidget> {
             ),
           ),
           const SizedBox(height: 20),
+          _buildRow('Video Codec', DropdownButton<String>(
+            value: _selectedCodec,
+            dropdownColor: const Color(0xFF2C2C2C),
+            style: const TextStyle(color: Colors.cyanAccent, fontFamily: 'monospace', fontSize: 13),
+            underline: Container(height: 1, color: Colors.white24),
+            items: const [
+              DropdownMenuItem(
+                value: 'HEVC',
+                child: Text('Hardware H.265 (HEVC)'),
+              ),
+              DropdownMenuItem(
+                value: 'DESKRT',
+                child: Text('DeskRT (AnyDesk Tile)'),
+              ),
+            ],
+            onChanged: (val) {
+              if (val != null) {
+                setState(() { _selectedCodec = val; });
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Host video codec switched to: ${val == 'DESKRT' ? 'DeskRT (AnyDesk Tile)' : 'Hardware H.265 (HEVC)'}'),
+                    duration: const Duration(seconds: 2),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              }
+            },
+          )),
+          const SizedBox(height: 16),
           _buildRow('Target FPS', DropdownButton<int>(
             value: _selectedFps,
             dropdownColor: const Color(0xFF2C2C2C),

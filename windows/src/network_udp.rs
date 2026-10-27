@@ -26,7 +26,29 @@ pub const PACKET_TEXT_FOCUS: u8 = 0x0E;
 pub static SMOOTHED_RTT_MS: AtomicU32 = AtomicU32::new(0);
 pub static VIDEO_SOCKET: OnceLock<std::net::UdpSocket> = OnceLock::new();
 pub static ACTIVE_CLIENT: RwLock<Option<SocketAddr>> = RwLock::new(None);
+pub static IS_CLIENT_CONNECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static LAST_CLIENT_PACKET_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static VIDEO_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
+pub fn is_client_active() -> bool {
+    IS_CLIENT_CONNECTED.load(Ordering::Relaxed)
+}
+
+pub fn mark_client_activity() {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    LAST_CLIENT_PACKET_MS.store(now_ms, Ordering::Relaxed);
+}
+
+pub fn disconnect_client() {
+    if IS_CLIENT_CONNECTED.swap(false, Ordering::Relaxed) {
+        info!("Handesk: Client disconnected. Entering zero-CPU low-power standby mode.");
+        *ACTIVE_CLIENT.write().unwrap() = None;
+        SMOOTHED_RTT_MS.store(0, Ordering::Relaxed);
+    }
+}
 
 pub fn is_tailscale_ip(addr: &SocketAddr) -> bool {
     match addr.ip() {
@@ -305,6 +327,10 @@ pub async fn start_udp_server() -> Result<()> {
 
         loop {
             interval.tick().await;
+            if !IS_CLIENT_CONNECTED.load(Ordering::Relaxed) {
+                tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+                continue;
+            }
             let remote_addr = match *ACTIVE_CLIENT.read().unwrap() {
                 Some(addr) => addr,
                 None => continue,
@@ -325,14 +351,16 @@ pub async fn start_udp_server() -> Result<()> {
         let mut ticks = 0u32;
         loop {
             interval.tick().await;
+            if !IS_CLIENT_CONNECTED.load(Ordering::Relaxed) {
+                last_w = 0;
+                last_h = 0;
+                ticks = 0;
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                continue;
+            }
             let remote_addr = match *ACTIVE_CLIENT.read().unwrap() {
                 Some(addr) => addr,
-                None => {
-                    last_w = 0;
-                    last_h = 0;
-                    ticks = 0;
-                    continue;
-                }
+                None => continue,
             };
             ticks = ticks.wrapping_add(1);
             let (w, h) = crate::capture::get_desktop_dimensions();
@@ -372,6 +400,24 @@ pub async fn start_udp_server() -> Result<()> {
                     cur_fps,
                     auto
                 );
+            }
+        }
+    });
+
+    // 7. Client Heartbeat Watchdog (Detects disconnects and re-enters zero-CPU standby)
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(1000));
+        loop {
+            interval.tick().await;
+            if IS_CLIENT_CONNECTED.load(Ordering::Relaxed) {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let last_ms = LAST_CLIENT_PACKET_MS.load(Ordering::Relaxed);
+                if now_ms.saturating_sub(last_ms) > 4500 {
+                    disconnect_client();
+                }
             }
         }
     });
@@ -420,6 +466,8 @@ pub async fn start_udp_server() -> Result<()> {
                 }
 
                 *ACTIVE_CLIENT.write().unwrap() = Some(remote_addr);
+                IS_CLIENT_CONNECTED.store(true, Ordering::Relaxed);
+                mark_client_activity();
                 crate::capture::FORCE_IDR.store(true, Ordering::Relaxed);
 
                 // Echo HELLO handshake back to client
@@ -447,6 +495,7 @@ pub async fn start_udp_server() -> Result<()> {
                 }
             }
             PACKET_PONG | PACKET_PONG_LEGACY => {
+                mark_client_activity();
                 if len >= 13 {
                     let mut ts_bytes = [0u8; 8];
                     ts_bytes.copy_from_slice(&buf[5..13]);
@@ -500,6 +549,7 @@ pub async fn start_udp_server() -> Result<()> {
                 }
             }
             PACKET_INPUT => {
+                mark_client_activity();
                 let is_click_release = len >= 8 && buf[5] == 0x02 && buf[7] == 0;
                 crate::input::handle_input_payload(&buf[5..len]);
                 if len >= 7 && (buf[5] == 0x10 || buf[5] == 0x11) {
@@ -524,6 +574,7 @@ pub async fn start_udp_server() -> Result<()> {
                 }
             }
             PACKET_REQUEST_IDR => {
+                mark_client_activity();
                 crate::capture::FORCE_IDR.store(true, Ordering::Relaxed);
                 info!("Client requested IDR keyframe via UDP (0x0A)");
                 let (w, h) = crate::capture::get_desktop_dimensions();
@@ -537,6 +588,7 @@ pub async fn start_udp_server() -> Result<()> {
                 }
             }
             PACKET_SETTINGS => {
+                mark_client_activity();
                 if len >= 13 {
                     let fps = u32::from_le_bytes(buf[5..9].try_into().unwrap());
                     let bitrate = u32::from_le_bytes(buf[9..13].try_into().unwrap());

@@ -52,6 +52,29 @@ pub fn get_desktop_dimensions() -> (u32, u32) {
     }
 }
 
+pub fn load_saved_settings() {
+    let candidates = [
+        "settings.json",
+        "C:\\Users\\user\\Desktop\\Handesk-Windows-Newest\\settings.json",
+    ];
+    for path in candidates {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(fps) = val.get("fps").and_then(|v| v.as_u64()) {
+                    TARGET_FPS.store(fps as u32, std::sync::atomic::Ordering::Relaxed);
+                    info!("Loaded saved FPS setting: {}", fps);
+                }
+                if let Some(br) = val.get("bitrate").and_then(|v| v.as_u64()) {
+                    CONFIGURED_BITRATE.store(br as u32, std::sync::atomic::Ordering::Relaxed);
+                    TARGET_BITRATE.store(br as u32, std::sync::atomic::Ordering::Relaxed);
+                    info!("Loaded saved Bitrate setting: {} bps", br);
+                }
+                break;
+            }
+        }
+    }
+}
+
 #[link(name = "user32")]
 extern "system" {
     fn OpenDesktopW(lpszDesktop: windows::core::PCWSTR, dwFlags: u32, fInherit: i32, dwDesiredAccess: u32) -> isize;
@@ -482,6 +505,14 @@ pub fn start_capture_loop() -> Result<()> {
     let mut last_frame_time = std::time::Instant::now();
 
     loop {
+        // Zero-CPU Idle Standby: When no client is connected, sleep and skip GPU capture & encoding
+        if !crate::network_udp::is_client_active() {
+            std::thread::sleep(Duration::from_millis(50));
+            last_frame_time = std::time::Instant::now();
+            last_sent = std::time::Instant::now();
+            continue;
+        }
+
         let new_bitrate = TARGET_BITRATE.load(std::sync::atomic::Ordering::Relaxed);
         if new_bitrate != current_bitrate {
             current_bitrate = new_bitrate;

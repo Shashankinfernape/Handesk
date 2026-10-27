@@ -140,7 +140,7 @@ impl SignalingClient {
                 let mut c = client.lock().await;
                 c.remote_id = Some(remoteId.clone());
                 info!("========================================");
-                info!("  DirectLink Remote ID: {}", remoteId);
+                info!("  Handesk Remote ID: {}", remoteId);
                 info!("========================================");
             }
             SignalMessage::ClientRequest {

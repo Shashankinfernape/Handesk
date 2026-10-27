@@ -27,9 +27,9 @@ late GetSettingsCall getCurrentBitrate;
 
 void main() {
   try {
-    dylib = DynamicLibrary.open('directlink_host.dll');
-    startBackend = dylib.lookupFunction<BackendFunc, BackendCall>('start_directlink_backend');
-    stopBackend = dylib.lookupFunction<BackendFunc, BackendCall>('stop_directlink_backend');
+    dylib = DynamicLibrary.open('handesk_host.dll');
+    startBackend = dylib.lookupFunction<BackendFunc, BackendCall>('start_handesk_backend');
+    stopBackend = dylib.lookupFunction<BackendFunc, BackendCall>('stop_handesk_backend');
     setSettings = dylib.lookupFunction<SettingsFunc, SettingsCall>('set_quality_settings');
     getCurrentFps = dylib.lookupFunction<GetSettingsFunc, GetSettingsCall>('get_current_fps');
     getCurrentBitrate = dylib.lookupFunction<GetSettingsFunc, GetSettingsCall>('get_current_bitrate');

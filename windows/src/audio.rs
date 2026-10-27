@@ -54,7 +54,7 @@ pub async fn start_audio_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
             device.build_input_stream(
                 stream_config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    if !AUDIO_ENABLED.load(Ordering::Relaxed) {
+                    if !AUDIO_ENABLED.load(Ordering::Relaxed) || !crate::network_udp::is_client_active() {
                         return;
                     }
                     let stereo = to_stereo_i16_f32(data, channels);
@@ -69,7 +69,7 @@ pub async fn start_audio_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
             device.build_input_stream(
                 stream_config,
                 move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                    if !AUDIO_ENABLED.load(Ordering::Relaxed) {
+                    if !AUDIO_ENABLED.load(Ordering::Relaxed) || !crate::network_udp::is_client_active() {
                         return;
                     }
                     let stereo = to_stereo_i16(data, channels);
@@ -93,6 +93,14 @@ pub async fn start_audio_loop(tx: mpsc::Sender<Vec<u8>>) -> Result<()> {
     let mut raw_idx: f64 = 0.0;
 
     loop {
+        if !crate::network_udp::is_client_active() {
+            raw_accumulator.clear();
+            raw_idx = 0.0;
+            while let Ok(_) = pcm_rx.try_recv() {}
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            continue;
+        }
+
         match pcm_rx.try_recv() {
             Ok(chunk) => {
                 raw_accumulator.extend_from_slice(&chunk);
