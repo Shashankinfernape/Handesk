@@ -25,6 +25,9 @@ class ScreenEncoder(
     private var drainJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+    var isHevc: Boolean = true
+        private set
+
     // Cache parameter sets (VPS/SPS/PPS for HEVC, SPS/PPS for AVC)
     private var cachedCsd: ByteArray? = null
 
@@ -37,8 +40,10 @@ class ScreenEncoder(
 
         val mimeType = try {
             MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC)
+            isHevc = true
             MediaFormat.MIMETYPE_VIDEO_HEVC
         } catch (_: Exception) {
+            isHevc = false
             MediaFormat.MIMETYPE_VIDEO_AVC
         }
 

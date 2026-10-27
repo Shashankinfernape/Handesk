@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicInteger
 class UdpHostServer(
     private val screenWidth: Int,
     private val screenHeight: Int,
+    private val isHevc: Boolean = true,
     private val onIdrRequested: () -> Unit
 ) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -156,7 +157,7 @@ class UdpHostServer(
     }
 
     private fun sendResolution(client: SocketAddress) {
-        val resPacket = ByteArray(13)
+        val resPacket = ByteArray(14)
         resPacket[0] = 'D'.code.toByte()
         resPacket[1] = 'L'.code.toByte()
         resPacket[2] = 'P'.code.toByte()
@@ -174,6 +175,9 @@ class UdpHostServer(
         resPacket[10] = ((screenHeight ushr 8) and 0xFF).toByte()
         resPacket[11] = ((screenHeight ushr 16) and 0xFF).toByte()
         resPacket[12] = ((screenHeight ushr 24) and 0xFF).toByte()
+
+        // Codec Type (1 byte): 0x01 = HEVC, 0x02 = AVC
+        resPacket[13] = if (isHevc) 0x01 else 0x02
 
         try {
             val dp = DatagramPacket(resPacket, resPacket.size, client)

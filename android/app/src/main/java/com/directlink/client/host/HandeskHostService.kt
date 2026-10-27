@@ -171,15 +171,19 @@ class HandeskHostService : Service() {
         val height = metrics.heightPixels
         val dpi = metrics.densityDpi
 
-        udpHostServer = UdpHostServer(width, height) {
-            screenEncoder?.requestSyncFrame()
-        }
-        udpHostServer?.start()
+        val encWidth = (width / 16) * 16
+        val encHeight = (height / 16) * 16
 
-        screenEncoder = ScreenEncoder(mediaProjection!!, width, height, dpi) { nalu ->
+        screenEncoder = ScreenEncoder(mediaProjection!!, encWidth, encHeight, dpi) { nalu ->
             udpHostServer?.broadcastVideoFrame(nalu)
         }
         screenEncoder?.start()
+
+        val isHevc = screenEncoder?.isHevc ?: true
+        udpHostServer = UdpHostServer(encWidth, encHeight, isHevc) {
+            screenEncoder?.requestSyncFrame()
+        }
+        udpHostServer?.start()
 
         isHostRunning = true
     }

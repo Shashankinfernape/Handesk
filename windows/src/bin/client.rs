@@ -251,6 +251,7 @@ fn main() {
         let mut decoder: Option<VideoDecoder> = None;
         let mut cur_width = 1280u32;
         let mut cur_height = 720u32;
+        let mut total_frames_decoded = 0u64;
 
         while RUNNING.load(Ordering::Relaxed) {
             match sock_net.recv_from(&mut buf) {
@@ -268,7 +269,8 @@ fn main() {
                             if len >= 13 {
                                 let w = u32::from_le_bytes(buf[5..9].try_into().unwrap());
                                 let h = u32::from_le_bytes(buf[9..13].try_into().unwrap());
-                                println!("Handesk Client: Target display resolution: {}x{}", w, h);
+                                let is_hevc = if len > 13 { buf[13] != 0x02 } else { true };
+                                println!("Handesk Client: Target display resolution: {}x{} (codec: {})", w, h, if is_hevc { "HEVC" } else { "AVC/H264" });
                                 cur_width = w;
                                 cur_height = h;
                                 if let Ok(mut s) = state_net.lock() {
@@ -277,9 +279,14 @@ fn main() {
                                     s.is_connected = true;
                                 }
                                 // Initialize or reset decoder for resolution
-                                decoder = VideoDecoder::new(w, h, true)
-                                    .or_else(|_| VideoDecoder::new(w, h, false))
+                                decoder = VideoDecoder::new(w, h, is_hevc)
+                                    .or_else(|_| VideoDecoder::new(w, h, !is_hevc))
                                     .ok();
+                                if decoder.is_some() {
+                                    println!("Handesk Client: VideoDecoder initialized successfully!");
+                                } else {
+                                    eprintln!("Handesk Client: VideoDecoder initialization failed!");
+                                }
                             }
                         }
                         PACKET_VIDEO => {
@@ -315,14 +322,26 @@ fn main() {
                                         }
 
                                         if let Some(dec) = decoder.as_mut() {
-                                            if let Ok(Some(rgb)) = dec.decode_frame(&full_nalu) {
-                                                if let Ok(mut frame_lock) = CURRENT_FRAME.lock() {
-                                                    *frame_lock = Some((cur_width, cur_height, rgb));
+                                            match dec.decode_frame(&full_nalu) {
+                                                Ok(Some(rgb)) => {
+                                                    total_frames_decoded += 1;
+                                                    if total_frames_decoded == 1 || total_frames_decoded % 120 == 0 {
+                                                        println!("Handesk Client: Rendered frame #{} ({} bytes, {}x{})", total_frames_decoded, full_nalu.len(), cur_width, cur_height);
+                                                    }
+                                                    if let Ok(mut frame_lock) = CURRENT_FRAME.lock() {
+                                                        *frame_lock = Some((cur_width, cur_height, rgb));
+                                                    }
+                                                    let hwnd_val = MAIN_HWND.load(Ordering::SeqCst);
+                                                    if hwnd_val != 0 {
+                                                        unsafe {
+                                                            let _ = InvalidateRect(HWND(hwnd_val as *mut _), None, false);
+                                                        }
+                                                    }
                                                 }
-                                                let hwnd_val = MAIN_HWND.load(Ordering::SeqCst);
-                                                if hwnd_val != 0 {
-                                                    unsafe {
-                                                        let _ = InvalidateRect(HWND(hwnd_val as *mut _), None, false);
+                                                Ok(None) => {}
+                                                Err(e) => {
+                                                    if total_frames_decoded == 0 {
+                                                        eprintln!("Handesk Client: Decode error: {:?}", e);
                                                     }
                                                 }
                                             }
