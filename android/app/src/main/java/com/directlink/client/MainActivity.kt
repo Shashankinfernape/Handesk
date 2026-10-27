@@ -11,6 +11,13 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.content.Intent
+import android.media.projection.MediaProjectionManager
+import android.provider.Settings
+import com.directlink.client.host.HandeskAccessibilityService
+import com.directlink.client.host.HandeskHostService
 import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -275,27 +282,124 @@ fun HomeTab(networkClient: NativeClient, activity: Activity, onConnected: () -> 
             Text("Handesk", color = TextPrimary, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
         }
 
-        // Your Desktop Card
+        var isHostRunning by remember { mutableStateOf(HandeskHostService.isHostRunning) }
+        val deviceIps = remember { HandeskHostService.getDeviceIps() }
+        val phoneTsIp = deviceIps.first
+        val phoneLanIp = deviceIps.second
+        val displayIp = phoneTsIp ?: phoneLanIp ?: "Offline"
+
+        val mediaProjectionLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+                HandeskHostService.start(activity, result.resultCode, result.data!!)
+                isHostRunning = true
+                Toast.makeText(activity, "Handesk Host Active on UDP 21118!", Toast.LENGTH_LONG).show()
+            } else {
+                Toast.makeText(activity, "Screen capture permission was not granted", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        // This Desk (Host Card)
         Card(
             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
             colors = CardDefaults.cardColors(containerColor = SurfaceDark),
             shape = RoundedCornerShape(16.dp)
         ) {
             Column(modifier = Modifier.padding(20.dp)) {
-                Text("This Desk", color = TextSecondary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("This Phone (Host)", color = TextSecondary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.weight(1f))
+                    if (phoneTsIp != null) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color(0xFF00E5FF).copy(alpha = 0.15f))
+                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Text("TAILSCALE", color = Color(0xFF00E5FF), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(localId, color = BrandBlue, fontSize = 32.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+                    Text(displayIp, color = BrandBlue, fontSize = 24.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
                     Spacer(Modifier.weight(1f))
-                    IconButton(onClick = { /* Copy to clipboard */ }) {
+                    IconButton(onClick = {
+                        val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                        val clip = android.content.ClipData.newPlainText("Handesk IP", displayIp)
+                        clipboard?.setPrimaryClip(clip)
+                        Toast.makeText(activity, "Copied " + displayIp, Toast.LENGTH_SHORT).show()
+                    }) {
                         Icon(Icons.Filled.Share, contentDescription = "Copy", tint = TextSecondary)
                     }
                 }
-                Spacer(Modifier.height(16.dp))
+
+                if (phoneLanIp != null && phoneTsIp != null) {
+                    Text("LAN IP: " + phoneLanIp, color = TextSecondary, fontSize = 12.sp)
+                }
+
+                Spacer(Modifier.height(14.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(SuccessGreen))
+                    Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(if (isHostRunning) SuccessGreen else Color.Gray))
                     Spacer(Modifier.width(8.dp))
-                    Text("Ready for incoming connection", color = TextSecondary, fontSize = 14.sp)
+                    Text(
+                        if (isHostRunning) "Host Active • Listening on UDP 21118" else "Ready to share screen",
+                        color = if (isHostRunning) SuccessGreen else TextSecondary,
+                        fontSize = 13.sp,
+                        fontWeight = if (isHostRunning) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+
+                Spacer(Modifier.height(16.dp))
+                if (!isHostRunning) {
+                    Button(
+                        onClick = {
+                            val projectionManager = activity.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                            mediaProjectionLauncher.launch(projectionManager.createScreenCaptureIntent())
+                        },
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = BrandBlue)
+                    ) {
+                        Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Share Screen (Start Host)", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = {
+                            HandeskHostService.stop(activity)
+                            isHostRunning = false
+                        },
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorRed),
+                        border = BorderStroke(1.dp, ErrorRed)
+                    ) {
+                        Icon(Icons.Filled.Close, contentDescription = null, tint = ErrorRed, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Stop Sharing Screen", color = ErrorRed, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                // Accessibility helper notice
+                if (!HandeskAccessibilityService.isRunning) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "💡 Enable Handesk in Accessibility to allow remote touch control from PC",
+                        color = Color(0xFFFFB74D),
+                        fontSize = 11.sp,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFFFFB74D).copy(alpha = 0.1f))
+                            .clickable {
+                                try {
+                                    activity.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                                } catch (_: Exception) {}
+                            }
+                            .padding(8.dp)
+                    )
                 }
             }
         }

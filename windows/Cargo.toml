@@ -60,3 +60,11 @@ crate-type = ["cdylib", "rlib"]
 
 
 
+
+[[bin]]
+name = "handesk-host"
+path = "src/main.rs"
+
+[[bin]]
+name = "handesk-client"
+path = "src/bin/client.rs"

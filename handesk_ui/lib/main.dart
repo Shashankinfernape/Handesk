@@ -214,8 +214,28 @@ class _HomePageState extends State<HomePage> {
               children: [
                 // Quick Connect is top and center!
                 QuickConnectWidget(
-                  onConnect: (id) {
-                    // Logic to connect goes here
+                  onConnect: (id) async {
+                    final target = id.trim();
+                    if (target.isEmpty) return;
+
+                    final exeDir = File(Platform.resolvedExecutable).parent.path;
+                    final candidates = [
+                      '$exeDir\\handesk-client.exe',
+                      'C:\\Users\\user\\Desktop\\Handesk-Windows-Newest\\handesk-client.exe',
+                      '$exeDir\\..\\windows\\target\\release\\handesk-client.exe',
+                    ];
+
+                    String? clientExe;
+                    for (final c in candidates) {
+                      if (File(c).existsSync()) {
+                        clientExe = c;
+                        break;
+                      }
+                    }
+
+                    if (clientExe != null) {
+                      await Process.start(clientExe, [target], mode: ProcessStartMode.detached);
+                    }
                   }
                 ),
                 const SizedBox(height: 48),

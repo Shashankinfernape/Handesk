@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Handesk</string>
+    <string name="accessibility_service_description">Allows Handesk to inject remote touch and keyboard input from connected PCs or clients.</string>
+</resources>

@@ -3,6 +3,7 @@ use tracing::{error, info};
 
 pub mod audio;
 pub mod capture;
+pub mod decoder;
 pub mod encoder;
 pub mod input;
 mod network;
