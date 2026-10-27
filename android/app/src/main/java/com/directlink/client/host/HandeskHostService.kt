@@ -145,47 +145,55 @@ class HandeskHostService : Service() {
     }
 
     private fun startScreenCaptureAndServer(resultCode: Int, data: Intent) {
-        val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        mediaProjection = projectionManager.getMediaProjection(resultCode, data)
-
-        if (mediaProjection == null) {
-            stopSelf()
-            return
-        }
-
         try {
-            mediaProjection?.registerCallback(object : MediaProjection.Callback() {
-                override fun onStop() {
-                    super.onStop()
-                    stopHost()
-                }
-            }, android.os.Handler(android.os.Looper.getMainLooper()))
-        } catch (_: Exception) {}
+            val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            mediaProjection = projectionManager.getMediaProjection(resultCode, data)
 
-        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        val metrics = DisplayMetrics()
-        @Suppress("DEPRECATION")
-        windowManager.defaultDisplay.getRealMetrics(metrics)
+            if (mediaProjection == null) {
+                stopSelf()
+                return
+            }
 
-        val width = metrics.widthPixels
-        val height = metrics.heightPixels
-        val dpi = metrics.densityDpi
+            try {
+                mediaProjection?.registerCallback(object : MediaProjection.Callback() {
+                    override fun onStop() {
+                        super.onStop()
+                        stopHost()
+                    }
+                }, android.os.Handler(android.os.Looper.getMainLooper()))
+            } catch (_: Exception) {}
 
-        val encWidth = (width / 16) * 16
-        val encHeight = (height / 16) * 16
+            val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            val metrics = DisplayMetrics()
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealMetrics(metrics)
 
-        screenEncoder = ScreenEncoder(mediaProjection!!, encWidth, encHeight, dpi) { nalu ->
-            udpHostServer?.broadcastVideoFrame(nalu)
+            val width = metrics.widthPixels
+            val height = metrics.heightPixels
+            val dpi = metrics.densityDpi
+
+            val encWidth = (width / 16) * 16
+            val encHeight = (height / 16) * 16
+
+            screenEncoder = ScreenEncoder(mediaProjection!!, encWidth, encHeight, dpi) { nalu ->
+                udpHostServer?.broadcastVideoFrame(nalu)
+            }
+            screenEncoder?.start()
+
+            val isHevc = screenEncoder?.isHevc ?: true
+            udpHostServer = UdpHostServer(encWidth, encHeight, isHevc) {
+                screenEncoder?.requestSyncFrame()
+            }
+            udpHostServer?.start()
+
+            isHostRunning = true
+            println("HandeskHostService: Host is running successfully on port 21118!")
+        } catch (e: Exception) {
+            e.printStackTrace()
+            println("HandeskHostService: Error starting host: ${e.message}")
+            stopHost()
+            stopSelf()
         }
-        screenEncoder?.start()
-
-        val isHevc = screenEncoder?.isHevc ?: true
-        udpHostServer = UdpHostServer(encWidth, encHeight, isHevc) {
-            screenEncoder?.requestSyncFrame()
-        }
-        udpHostServer?.start()
-
-        isHostRunning = true
     }
 
     private fun stopHost() {

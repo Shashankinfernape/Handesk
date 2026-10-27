@@ -98,6 +98,12 @@ class MainActivity : ComponentActivity() {
             controller.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
 
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 101)
+            }
+        }
+
         setContent {
             HandeskTheme {
                 HandeskApp(networkClient, this)
@@ -283,6 +289,12 @@ fun HomeTab(networkClient: NativeClient, activity: Activity, onConnected: () -> 
         }
 
         var isHostRunning by remember { mutableStateOf(HandeskHostService.isHostRunning) }
+        LaunchedEffect(Unit) {
+            while (true) {
+                isHostRunning = HandeskHostService.isHostRunning
+                kotlinx.coroutines.delay(1000)
+            }
+        }
         val deviceIps = remember { HandeskHostService.getDeviceIps() }
         val phoneTsIp = deviceIps.first
         val phoneLanIp = deviceIps.second

@@ -31,6 +31,15 @@ class ScreenEncoder(
     // Cache parameter sets (VPS/SPS/PPS for HEVC, SPS/PPS for AVC)
     private var cachedCsd: ByteArray? = null
 
+    private fun createVideoFormat(mime: String, w: Int, h: Int): MediaFormat {
+        return MediaFormat.createVideoFormat(mime, w, h).apply {
+            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+            setInteger(MediaFormat.KEY_BIT_RATE, 4_000_000) // 4.0 Mbps
+            setInteger(MediaFormat.KEY_FRAME_RATE, 60)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // 1 second GOP
+        }
+    }
+
     fun start() {
         stop()
 
@@ -38,36 +47,44 @@ class ScreenEncoder(
         val encWidth = (width / 16) * 16
         val encHeight = (height / 16) * 16
 
-        val mimeType = try {
-            MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC)
-            isHevc = true
-            MediaFormat.MIMETYPE_VIDEO_HEVC
-        } catch (_: Exception) {
-            isHevc = false
-            MediaFormat.MIMETYPE_VIDEO_AVC
+        var configuredCodec: MediaCodec? = null
+        var configuredSurface: Surface? = null
+        var usingHevc = false
+
+        // 1. Try HEVC (H.265) first
+        try {
+            val format = createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, encWidth, encHeight)
+            val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC)
+            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            configuredSurface = codec.createInputSurface()
+            codec.start()
+            configuredCodec = codec
+            usingHevc = true
+            println("ScreenEncoder: Configured hardware HEVC encoder (${encWidth}x${encHeight})")
+        } catch (e: Exception) {
+            println("ScreenEncoder: HEVC setup failed ($e), falling back to AVC/H.264")
         }
 
-        val format = MediaFormat.createVideoFormat(mimeType, encWidth, encHeight).apply {
-            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, 4_000_000) // 4.0 Mbps
-            setInteger(MediaFormat.KEY_FRAME_RATE, 60)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // 1 second GOP
+        // 2. Fallback to AVC (H.264) if HEVC is unsupported or failed
+        if (configuredCodec == null) {
             try {
-                setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
-            } catch (_: Exception) {}
-            try {
-                setInteger(MediaFormat.KEY_LATENCY, 0)
-            } catch (_: Exception) {}
-            try {
-                setInteger(MediaFormat.KEY_PRIORITY, 0) // Realtime priority
-            } catch (_: Exception) {}
+                val format = createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, encWidth, encHeight)
+                val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                configuredSurface = codec.createInputSurface()
+                codec.start()
+                configuredCodec = codec
+                usingHevc = false
+                println("ScreenEncoder: Configured hardware AVC encoder (${encWidth}x${encHeight})")
+            } catch (e: Exception) {
+                println("ScreenEncoder: AVC setup failed ($e)")
+                return
+            }
         }
 
-        val codec = MediaCodec.createEncoderByType(mimeType)
-        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        inputSurface = codec.createInputSurface()
-        codec.start()
-        encoder = codec
+        encoder = configuredCodec
+        inputSurface = configuredSurface
+        isHevc = usingHevc
 
         try {
             mediaProjection.registerCallback(object : MediaProjection.Callback() {
